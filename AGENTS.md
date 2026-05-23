@@ -2,7 +2,7 @@
 
 ## Project Overview
 
-This repository contains a standalone Python script for analyzing PyTorch profiler Chrome trace JSON files. It extracts CPU operator performance statistics (execution time, shapes, strides) and outputs structured reports.
+This repository contains a standalone Python script for analyzing PyTorch profiler Chrome trace JSON files. It extracts CPU operator performance statistics (execution time, shapes, strides, **input data types**, **concrete inputs**) and outputs structured reports. It also captures **communication operators** for distributed training profiling.
 
 **Tech Stack**: Python 3.12, standard library + optional `openpyxl` for Excel export  
 **Domain**: PyTorch performance profiling / trace analysis  
@@ -39,8 +39,8 @@ python analys_trace_v4.py profiler_trace.json --no-summary
 
 ### Output Files
 - **Excel mode** (default if `openpyxl` installed): `operator_analysis.xlsx` with two sheets:
-  - `算子总表` — Aggregated operator stats (name, shapes, strides, call count, total/avg time)
-  - `Shape统计表` — Per-shape breakdown (min/max/avg time per shape variant)
+  - `算子总表` — Aggregated operator stats (name, shapes, strides, **input types**, **concrete inputs**, call count, total/avg time)
+  - `Shape统计表` — Per-shape breakdown (min/max/avg time per shape variant, **input types**, **concrete inputs**)
 - **CSV mode** (fallback): Two separate files
   - `cpu_operators.csv` — Operator summary
   - `shape_statistics.csv` — Shape-level stats
@@ -61,13 +61,40 @@ Input is Chrome trace JSON from `torch.profiler`, containing `traceEvents` array
 - `ph`: Phase — `"B"` (begin), `"E"` (end), or `"X"` (complete event)
 - `cat`: Category — CPU ops have `cpu_op` or contain `"cpu"`
 - `name`: Operator name — filters for `aten::` or `torch::` prefix
-- `args`: Contains `Input Dims`, `Input Strides`, `input_dims`, `input_strides`
+- `args`: Contains:
+  - `Input Dims` / `input_dims` — Input tensor shapes
+  - `Input Strides` / `input_strides` — Input tensor strides
+  - **`Input type`** / `input_type` — Input tensor data types (e.g., `float`, `long int`, `Scalar`)
+  - **`Concrete Inputs`** / `concrete_inputs` — Concrete scalar values (e.g., `0`, `True`, `[1, 1]`)
 
 ### Operator Matching
-Only CPU operators are analyzed. Matching logic:
+Two categories of operators are captured:
+
+**1. CPU Operators** — Standard PyTorch operations:
 ```python
 name.startswith(('aten::', 'torch::')) and 'cpu' in cat.lower()
 ```
+
+**2. Communication Operators** — Distributed training operations:
+```python
+name.startswith(('c10d::', 'nccl:', 'gloo:', 'mpi:'))
+```
+
+Communication backends supported:
+| Prefix | Backend | Description |
+|--------|---------|-------------|
+| `c10d::` | PyTorch C10D | Generic collective communication |
+| `nccl:` | NVIDIA NCCL | GPU-optimized communication |
+| `gloo:` | Gloo | CPU/GPU communication |
+| `mpi:` | MPI | CPU distributed communication |
+
+### Summary Output
+When `--no-summary` is not used, the script prints:
+- **最耗时的算子 TOP 10** — Top 10 operators by total time
+- **调用最频繁的算子 TOP 5** — Top 5 operators by call count
+- **Shape 多样性最高的算子 TOP 5** — Top 5 operators by shape diversity
+- **通信算子统计** — Communication operator summary (count, total time, top 5)
+- **总体统计** — Total operator count, total time, total calls
 
 ## Development Notes
 
@@ -81,4 +108,7 @@ name.startswith(('aten::', 'torch::')) and 'cpu' in cat.lower()
 - When adding features, maintain Chinese UI strings and comments.
 - Prefer standard library; only add dependencies if essential.
 - If modifying output format, update both Excel (`export_to_excel`) and CSV (`export_to_csv`) paths.
+- When adding new operator categories (e.g., new communication backends), update both:
+  - `is_communication_operator()` — Detection logic
+  - `print_summary()` — Statistics aggregation logic
 - Run `python analys_trace_v4.py profiler_trace.json` to verify changes.
