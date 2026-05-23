@@ -35,12 +35,18 @@ class ShapeStats:
         self.call_count = 0
         self.total_duration = 0.0  # 微秒
         self.durations = []
+        self.input_types_set = set()  # 记录所有出现过的 input types
+        self.concrete_inputs_set = set()  # 记录所有出现过的 concrete inputs
     
-    def add_call(self, duration: float):
+    def add_call(self, duration: float, input_types=None, concrete_inputs=None):
         """添加一次调用记录"""
         self.call_count += 1
         self.total_duration += duration
         self.durations.append(duration)
+        if input_types:
+            self.input_types_set.add(str(input_types))
+        if concrete_inputs:
+            self.concrete_inputs_set.add(str(concrete_inputs))
     
     def get_avg_duration(self):
         """获取平均执行时间（毫秒）"""
@@ -68,7 +74,8 @@ class OperatorInfo:
         self.total_duration = 0.0  # 微秒
         self.shape_stats = {}  # shape_str -> ShapeStats
     
-    def add_shape(self, shape, strides=None, duration: float = 0.0):
+    def add_shape(self, shape, strides=None, duration: float = 0.0,
+                  input_types=None, concrete_inputs=None):
         """添加 shape 信息"""
         if shape:
             shape_tuple = tuple(tuple(s) if isinstance(s, list) else s for s in shape)
@@ -83,7 +90,7 @@ class OperatorInfo:
             if key not in self.shape_stats:
                 self.shape_stats[key] = ShapeStats(shape_tuple, strides_tuple)
 
-            self.shape_stats[key].add_call(duration)
+            self.shape_stats[key].add_call(duration, input_types, concrete_inputs)
     
     def get_total_duration_ms(self):
         """获取总执行时间（毫秒）"""
@@ -116,6 +123,24 @@ class OperatorInfo:
             return 'N/A'
         return " | ".join(sorted(strides))
 
+    def get_all_input_types_str(self):
+        """获取所有 input types 的字符串表示"""
+        if not self.shape_stats:
+            return 'N/A'
+        types = set()
+        for stats in self.shape_stats.values():
+            types.update(stats.input_types_set)
+        return " | ".join(sorted(types)) if types else 'N/A'
+
+    def get_all_concrete_inputs_str(self):
+        """获取所有 concrete inputs 的字符串表示"""
+        if not self.shape_stats:
+            return 'N/A'
+        concretes = set()
+        for stats in self.shape_stats.values():
+            concretes.update(stats.concrete_inputs_set)
+        return " | ".join(sorted(concretes)) if concretes else 'N/A'
+
 
 class ChromeTraceAnalyzer:
     """Chrome Trace 分析器"""
@@ -139,11 +164,24 @@ class ChromeTraceAnalyzer:
             print(f"错误：文件不存在: {self.trace_file}")
             sys.exit(1)
     
+    def is_communication_operator(self, event: dict) -> bool:
+        """判断是否为通信算子事件"""
+        name = event.get('name', '')
+        # 底层 C++ 通信算子
+        if name.startswith(('c10d::', 'nccl:', 'gloo:')):
+            return True
+        return False
+    
     def is_cpu_operator(self, event: dict) -> bool:
-        """判断是否为 CPU 算子事件"""
+        """判断是否为 CPU 算子或通信算子事件"""
         name = event.get('name', '')
         cat = event.get('cat', '')
         
+        # 通信算子
+        if self.is_communication_operator(event):
+            return True
+        
+        # 原有的 CPU 算子匹配逻辑
         return (name.startswith('aten::') or name.startswith('torch::')) and \
                ('cpu' in cat.lower() or cat == 'cpu_op' or 'kernel' not in cat.lower())
     
@@ -170,7 +208,31 @@ class ChromeTraceAnalyzer:
                     return strides
 
         return None
-    
+
+    def extract_input_types(self, event: dict) -> list:
+        """提取算子的 input types"""
+        args = event.get('args', {})
+
+        for key in ['Input type', 'input_type']:
+            if key in args:
+                types = args[key]
+                if isinstance(types, list):
+                    return types
+
+        return None
+
+    def extract_concrete_inputs(self, event: dict) -> list:
+        """提取算子的 concrete inputs"""
+        args = event.get('args', {})
+
+        for key in ['Concrete Inputs', 'concrete_inputs']:
+            if key in args:
+                inputs = args[key]
+                if isinstance(inputs, list):
+                    return inputs
+
+        return None
+
     def analyze(self):
         """分析 trace 文件"""
         trace_data = self.load_trace()
@@ -198,31 +260,35 @@ class ChromeTraceAnalyzer:
             if ph == 'B':
                 shapes = self.extract_shapes(event)
                 strides = self.extract_strides(event)
-                pending_events[tid][name] = (ts, shapes, strides)
-            
+                input_types = self.extract_input_types(event)
+                concrete_inputs = self.extract_concrete_inputs(event)
+                pending_events[tid][name] = (ts, shapes, strides, input_types, concrete_inputs)
+
             # 处理 End 事件
             elif ph == 'E':
                 if name in pending_events[tid]:
-                    start_ts, shapes, strides = pending_events[tid][name]
+                    start_ts, shapes, strides, input_types, concrete_inputs = pending_events[tid][name]
                     duration = ts - start_ts
 
                     if shapes:
-                        self.operators[name].add_shape(shapes, strides, duration)
-                    
+                        self.operators[name].add_shape(shapes, strides, duration, input_types, concrete_inputs)
+
                     self.operators[name].call_count += 1
                     self.operators[name].total_duration += duration
-                    
+
                     del pending_events[tid][name]
-            
+
             # 处理完整事件 (ph == 'X')
             elif ph == 'X':
                 duration = event.get('dur', 0.0)
                 shapes = self.extract_shapes(event)
                 strides = self.extract_strides(event)
+                input_types = self.extract_input_types(event)
+                concrete_inputs = self.extract_concrete_inputs(event)
 
                 if shapes:
-                    self.operators[name].add_shape(shapes, strides, duration)
-                
+                    self.operators[name].add_shape(shapes, strides, duration, input_types, concrete_inputs)
+
                 self.operators[name].call_count += 1
                 self.operators[name].total_duration += duration
         
@@ -241,7 +307,7 @@ class ChromeTraceAnalyzer:
                            reverse=True)
         
         with open(operators_file, 'w', newline='', encoding='utf-8') as f:
-            fieldnames = ['算子名称', '输入Shapes', '输入Strides', '调用次数', '总执行时间(ms)', '平均执行时间(ms)']
+            fieldnames = ['算子名称', '输入Shapes', '输入Strides', '输入数据类型', 'Concrete Inputs', '调用次数', '总执行时间(ms)', '平均执行时间(ms)']
             writer = csv.DictWriter(f, fieldnames=fieldnames)
 
             writer.writeheader()
@@ -250,6 +316,8 @@ class ChromeTraceAnalyzer:
                     '算子名称': op.name,
                     '输入Shapes': op.get_all_shapes_str(),
                     '输入Strides': op.get_all_strides_str(),
+                    '输入数据类型': op.get_all_input_types_str(),
+                    'Concrete Inputs': op.get_all_concrete_inputs_str(),
                     '调用次数': op.call_count,
                     '总执行时间(ms)': round(op.get_total_duration_ms(), 4),
                     '平均执行时间(ms)': round(op.get_avg_duration_ms(), 4)
@@ -265,10 +333,14 @@ class ChromeTraceAnalyzer:
         for op in self.operators.values():
             for key, stats in op.shape_stats.items():
                 strides_str = str(list(stats.strides)) if stats.strides else 'N/A'
+                input_types_str = ' | '.join(sorted(stats.input_types_set)) if stats.input_types_set else 'N/A'
+                concrete_inputs_str = ' | '.join(sorted(stats.concrete_inputs_set)) if stats.concrete_inputs_set else 'N/A'
                 all_shape_stats.append({
                     'op_name': op.name,
                     'shape': str(list(stats.shape)),
                     'strides': strides_str,
+                    'input_types': input_types_str,
+                    'concrete_inputs': concrete_inputs_str,
                     'call_count': stats.call_count,
                     'total_duration_ms': stats.get_total_duration_ms(),
                     'avg_duration_ms': stats.get_avg_duration(),
@@ -279,7 +351,7 @@ class ChromeTraceAnalyzer:
         all_shape_stats.sort(key=lambda x: (x['op_name'], -x['total_duration_ms']))
 
         with open(shapes_file, 'w', newline='', encoding='utf-8') as f:
-            fieldnames = ['算子名称', '输入Shapes', '输入Strides', '调用次数',
+            fieldnames = ['算子名称', '输入Shapes', '输入Strides', '输入数据类型', 'Concrete Inputs', '调用次数',
                          '总执行时间(ms)', '平均执行时间(ms)',
                          '最小执行时间(ms)', '最大执行时间(ms)']
             writer = csv.DictWriter(f, fieldnames=fieldnames)
@@ -290,6 +362,8 @@ class ChromeTraceAnalyzer:
                     '算子名称': stat['op_name'],
                     '输入Shapes': stat['shape'],
                     '输入Strides': stat['strides'],
+                    '输入数据类型': stat['input_types'],
+                    'Concrete Inputs': stat['concrete_inputs'],
                     '调用次数': stat['call_count'],
                     '总执行时间(ms)': round(stat['total_duration_ms'], 4),
                     '平均执行时间(ms)': round(stat['avg_duration_ms'], 4),
@@ -327,7 +401,7 @@ class ChromeTraceAnalyzer:
         print("  - 正在写入算子总表...")
         
         # 表头
-        operators_headers = ['算子名称', '输入Shapes', '输入Strides', '调用次数', '总执行时间(ms)', '平均执行时间(ms)']
+        operators_headers = ['算子名称', '输入Shapes', '输入Strides', '输入数据类型', 'Concrete Inputs', '调用次数', '总执行时间(ms)', '平均执行时间(ms)']
         ws_operators.append(operators_headers)
         
         # 设置表头样式
@@ -348,6 +422,8 @@ class ChromeTraceAnalyzer:
                 op.name,
                 op.get_all_shapes_str(),
                 op.get_all_strides_str(),
+                op.get_all_input_types_str(),
+                op.get_all_concrete_inputs_str(),
                 op.call_count,
                 round(op.get_total_duration_ms(), 4),
                 round(op.get_avg_duration_ms(), 4)
@@ -372,7 +448,7 @@ class ChromeTraceAnalyzer:
         print("  - 正在写入 Shape 统计表...")
         
         # 表头
-        shape_headers = ['算子名称', '输入Shapes', '输入Strides', '调用次数',
+        shape_headers = ['算子名称', '输入Shapes', '输入Strides', '输入数据类型', 'Concrete Inputs', '调用次数',
                         '总执行时间(ms)', '平均执行时间(ms)',
                         '最小执行时间(ms)', '最大执行时间(ms)']
         ws_shapes.append(shape_headers)
@@ -389,10 +465,14 @@ class ChromeTraceAnalyzer:
         for op in self.operators.values():
             for key, stats in op.shape_stats.items():
                 strides_str = str(list(stats.strides)) if stats.strides else 'N/A'
+                input_types_str = ' | '.join(sorted(stats.input_types_set)) if stats.input_types_set else 'N/A'
+                concrete_inputs_str = ' | '.join(sorted(stats.concrete_inputs_set)) if stats.concrete_inputs_set else 'N/A'
                 all_shape_stats.append({
                     'op_name': op.name,
                     'shape': str(list(stats.shape)),
                     'strides': strides_str,
+                    'input_types': input_types_str,
+                    'concrete_inputs': concrete_inputs_str,
                     'call_count': stats.call_count,
                     'total_duration_ms': stats.get_total_duration_ms(),
                     'avg_duration_ms': stats.get_avg_duration(),
@@ -407,6 +487,8 @@ class ChromeTraceAnalyzer:
                 stat['op_name'],
                 stat['shape'],
                 stat['strides'],
+                stat['input_types'],
+                stat['concrete_inputs'],
                 stat['call_count'],
                 round(stat['total_duration_ms'], 4),
                 round(stat['avg_duration_ms'], 4),
@@ -471,6 +553,23 @@ class ChromeTraceAnalyzer:
                               reverse=True)[:5]
         for i, op in enumerate(top_diversity, 1):
             print(f"  {i}. {op.name}: {len(op.shape_stats)} 种不同的 shape")
+        
+        # 通信算子统计
+        comm_ops = {name: op for name, op in self.operators.items() 
+                    if any(name.startswith(prefix) for prefix in ('c10d::', 'nccl:', 'gloo:'))}
+        if comm_ops:
+            print("\n【通信算子统计】")
+            comm_time = sum(op.total_duration for op in comm_ops.values())
+            comm_percentage = (comm_time / total_time_all * 100) if total_time_all > 0 else 0
+            print(f"  通信算子数: {len(comm_ops)}")
+            print(f"  通信总时间: {comm_time / 1000.0:.2f} ms ({comm_percentage:.1f}%)")
+            print(f"  通信调用次数: {sum(op.call_count for op in comm_ops.values())}")
+            
+            print("\n  通信算子 TOP 5:")
+            top_comm = sorted(comm_ops.values(), key=lambda x: x.total_duration, reverse=True)[:5]
+            for i, op in enumerate(top_comm, 1):
+                print(f"    {i}. {op.name}: {op.get_total_duration_ms():.2f} ms, "
+                      f"调用: {op.call_count} 次")
         
         # 总体统计
         print(f"\n【总体统计】")

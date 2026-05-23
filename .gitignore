@@ -6,3 +6,4 @@
 
 # 生成的 Excel 文件
 *.xlsx
+*.swp
