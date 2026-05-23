@@ -167,8 +167,8 @@ class ChromeTraceAnalyzer:
     def is_communication_operator(self, event: dict) -> bool:
         """判断是否为通信算子事件"""
         name = event.get('name', '')
-        # 底层 C++ 通信算子
-        if name.startswith(('c10d::', 'nccl:', 'gloo:')):
+        # 底层 C++ 通信算子 (c10d/NCCL/Gloo/MPI)
+        if name.startswith(('c10d::', 'nccl:', 'gloo:', 'mpi:')):
             return True
         return False
     
@@ -556,7 +556,7 @@ class ChromeTraceAnalyzer:
         
         # 通信算子统计
         comm_ops = {name: op for name, op in self.operators.items() 
-                    if any(name.startswith(prefix) for prefix in ('c10d::', 'nccl:', 'gloo:'))}
+                    if any(name.startswith(prefix) for prefix in ('c10d::', 'nccl:', 'gloo:', 'mpi:'))}
         if comm_ops:
             print("\n【通信算子统计】")
             comm_time = sum(op.total_duration for op in comm_ops.values())
