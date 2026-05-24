@@ -109,3 +109,78 @@ class TestHierarchyAnalyzer:
         assert len(tree) == 2
         assert tree[0]["name"] == "aten::conv2d"
         assert len(tree[0]["children"]) == 2
+
+    def test_deduplicated_tree_output(self, sample_tree):
+        analyzer = HierarchyAnalyzer(sample_tree)
+        with tempfile.NamedTemporaryFile(mode='w', suffix='.txt', delete=False) as f:
+            temp_path = f.name
+
+        analyzer.export_call_tree_text(temp_path, deduplicate=True)
+
+        with open(temp_path, "r") as f:
+            content = f.read()
+
+        assert "去重聚合视图" in content
+        assert "根节点 #1" in content
+        assert "aten::conv2d" in content
+        assert "aten::convolution" in content
+
+    def test_deduplicated_tree_aggregates_counts(self):
+        root1 = HierarchicalOpInfo(name="aten::select", start_ts=0, duration_us=100, tid=1, is_root=True)
+        child1 = HierarchicalOpInfo(name="aten::as_strided", start_ts=10, duration_us=80, tid=1)
+        root1.children = [child1]
+        child1.parent = root1
+        root1.depth = 0
+        child1.depth = 1
+
+        root2 = HierarchicalOpInfo(name="aten::select", start_ts=200, duration_us=100, tid=1, is_root=True)
+        child2 = HierarchicalOpInfo(name="aten::as_strided", start_ts=210, duration_us=80, tid=1)
+        root2.children = [child2]
+        child2.parent = root2
+        root2.depth = 0
+        child2.depth = 1
+
+        analyzer = HierarchyAnalyzer([root1, root2])
+        with tempfile.NamedTemporaryFile(mode='w', suffix='.txt', delete=False) as f:
+            temp_path = f.name
+
+        analyzer.export_call_tree_text(temp_path, deduplicate=True)
+
+        with open(temp_path, "r") as f:
+            content = f.read()
+
+        assert "[×2]" in content
+        assert "出现次数: 2" in content
+
+    def test_recursive_flag_in_tree(self):
+        root = HierarchicalOpInfo(name="aten::sum", start_ts=0, duration_us=100, is_root=True)
+        inner = HierarchicalOpInfo(name="aten::sum", start_ts=10, duration_us=80, tid=1)
+        root.children = [inner]
+        inner.parent = root
+        root.depth = 0
+        inner.depth = 1
+
+        analyzer = HierarchyAnalyzer([root])
+        with tempfile.NamedTemporaryFile(mode='w', suffix='.txt', delete=False) as f:
+            temp_path = f.name
+
+        analyzer.export_call_tree_text(temp_path, deduplicate=True)
+
+        with open(temp_path, "r") as f:
+            content = f.read()
+
+        assert "[RECURSIVE]" in content
+        assert "递归 / 循环调用模式汇总" in content
+
+    def test_raw_tree_backward_compatible(self, sample_tree):
+        analyzer = HierarchyAnalyzer(sample_tree)
+        with tempfile.NamedTemporaryFile(mode='w', suffix='.txt', delete=False) as f:
+            temp_path = f.name
+
+        analyzer.export_call_tree_text(temp_path, deduplicate=False)
+
+        with open(temp_path, "r") as f:
+            content = f.read()
+
+        assert "depth=" in content
+        assert "aten::conv2d" in content
