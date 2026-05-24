@@ -1,9 +1,18 @@
-"""HTML 报告生成器"""
+"""HTML 报告生成器 —— 可选功能，需要 jinja2"""
 from typing import List
 
 from op_testgen.correctness.test_runner import CorrectnessResult
 from op_testgen.perf.benchmark import PerfResult
 from op_testgen.reporter.base import BaseReporter
+
+
+def _check_jinja2():
+    try:
+        from jinja2 import Template  # noqa: F401
+    except ImportError:
+        raise ImportError(
+            "HTML 报告需要 jinja2。请安装: pip install jinja2"
+        )
 
 
 HTML_TEMPLATE = """
@@ -101,6 +110,7 @@ class HTMLReporter(BaseReporter):
 
     def generate(self, correctness_results: List[CorrectnessResult],
                  perf_results: List[PerfResult], output_path: str) -> None:
+        _check_jinja2()
         from jinja2 import Template
 
         total_ops = len(correctness_results)

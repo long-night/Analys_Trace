@@ -14,6 +14,7 @@ from op_testgen.correctness.test_runner import CorrectnessRunner
 from op_testgen.mapper.op_mapper import OpMapper
 from op_testgen.parser.trace_parser import TraceParser
 from op_testgen.perf.benchmark import PerfBenchmark
+from op_testgen.reporter.markdown_reporter import MarkdownReporter
 from op_testgen.reporter.html_reporter import HTMLReporter
 from op_testgen.reporter.excel_reporter import ExcelReporter
 
@@ -156,14 +157,23 @@ def cmd_test(args) -> int:
 
     # 生成报告
     print(f"\n[6/6] 生成报告...")
+    if args.format in ("markdown", "all"):
+        md_reporter = MarkdownReporter()
+        md_path = args.output if args.output.endswith(".md") else args.output + ".md"
+        md_reporter.generate(all_correctness, all_perf, md_path)
+        print(f"  Markdown 报告: {md_path}")
+
     if args.format in ("html", "all"):
-        html_reporter = HTMLReporter()
-        html_path = args.output if args.output.endswith(".html") else args.output + ".html"
-        html_reporter.generate(all_correctness, all_perf, html_path)
-        print(f"  HTML 报告: {html_path}")
+        try:
+            html_reporter = HTMLReporter()
+            html_path = args.output if args.output.endswith(".html") else args.output + ".html"
+            html_reporter.generate(all_correctness, all_perf, html_path)
+            print(f"  HTML 报告: {html_path}")
+        except ImportError as e:
+            print(f"  警告: {e}")
 
     if args.format in ("json", "all"):
-        json_path = args.output.replace(".html", ".json").replace(".xlsx", ".json")
+        json_path = args.output.replace(".md", ".json").replace(".html", ".json").replace(".xlsx", ".json")
         if not json_path.endswith(".json"):
             json_path += ".json"
         report_data = {
@@ -190,7 +200,7 @@ def cmd_test(args) -> int:
     if args.format in ("excel", "all"):
         try:
             excel_reporter = ExcelReporter()
-            excel_path = args.output.replace(".html", ".xlsx").replace(".json", ".xlsx")
+            excel_path = args.output.replace(".md", ".xlsx").replace(".html", ".xlsx").replace(".json", ".xlsx")
             if not excel_path.endswith(".xlsx"):
                 excel_path += ".xlsx"
             excel_reporter.generate(all_correctness, all_perf, excel_path)
@@ -271,9 +281,9 @@ def main(argv: Optional[list] = None) -> int:
     test_parser.add_argument("trace_file", help="PyTorch Profiler Chrome Trace JSON 文件路径")
     test_parser.add_argument("--backend", choices=["cuda", "swdnn", "auto", "cpu"], default="cuda",
                             help="对比后端 (默认: cuda)")
-    test_parser.add_argument("-o", "--output", default="op_testgen_report.html", help="输出文件路径")
-    test_parser.add_argument("--format", choices=["html", "json", "excel", "all"], default="html",
-                            help="输出格式 (默认: html)")
+    test_parser.add_argument("-o", "--output", default="op_testgen_report.md", help="输出文件路径")
+    test_parser.add_argument("--format", choices=["markdown", "html", "json", "excel", "all"], default="markdown",
+                            help="输出格式 (默认: markdown)")
     test_parser.add_argument("--seed", type=int, default=42, help="随机种子 (默认: 42)")
     test_parser.add_argument("--iters", type=int, default=10, help="性能测试迭代次数")
     test_parser.add_argument("--max-ops", type=int, default=100, help="最大测试算子数（默认: 100）")

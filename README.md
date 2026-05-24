@@ -23,7 +23,11 @@
 
 - Python >= 3.10
 - PyTorch
-- PyYAML, Jinja2
+- PyYAML
+
+可选依赖：
+- `jinja2` — HTML 报告支持
+- `openpyxl` — Excel 报告支持
 
 ### 安装方式
 
@@ -35,8 +39,14 @@ cd Analys_Trace
 # 基础安装
 pip install -e .
 
-# 带 Excel 报告支持（推荐）
+# 带 HTML 报告支持
+pip install -e ".[html]"
+
+# 带 Excel 报告支持
 pip install -e ".[excel]"
+
+# 同时安装 HTML + Excel
+pip install -e ".[html,excel]"
 
 # 开发依赖
 pip install -e ".[dev]"
@@ -76,7 +86,7 @@ python -m op_testgen.cli analyze profiler_trace.json
 python -m op_testgen.cli test profiler_trace.json --backend cpu --only-correctness
 ```
 
-> **注意**：直接运行时需要确保依赖已安装（`pip install torch pyyaml jinja2`，可选 `openpyxl`）。
+> **注意**：直接运行时需要确保基础依赖已安装（`pip install torch pyyaml`）。可选：`jinja2`（HTML 报告）、`openpyxl`（Excel 报告）。
 
 ## 快速开始
 
@@ -139,7 +149,8 @@ SWDNN=ON op_testgen test profiler_trace.json --backend swdnn
 - CSV 模式：`cpu_operators.csv` + `cpu_operators_shapes.csv`
 
 **测试模式输出：**
-- HTML 报告：`op_testgen_report.html`
+- **Markdown 报告**（默认）：`op_testgen_report.md` — 纯文本表格，无需额外依赖
+- HTML 报告：`op_testgen_report.html`（需 jinja2）
 - JSON 报告：`op_testgen_report.json`
 - Excel 报告：`op_testgen_report.xlsx`（需 openpyxl）
 
@@ -160,8 +171,8 @@ SWDNN=ON op_testgen test profiler_trace.json --backend swdnn
 |------|------|--------|
 | `trace_file` | PyTorch Profiler Chrome Trace JSON 文件路径 | *(必填)* |
 | `--backend` | 对比后端: `cuda`, `swdnn`, `cpu`, `auto` | `cuda` |
-| `-o, --output` | 输出文件路径 | `op_testgen_report.html` |
-| `--format` | 输出格式: `html`, `json`, `excel`, `all` | `html` |
+| `-o, --output` | 输出文件路径 | `op_testgen_report.md` |
+| `--format` | 输出格式: `markdown`, `html`, `json`, `excel`, `all` | `markdown` |
 | `--seed` | 随机种子（影响输入张量生成） | `42` |
 | `--iters` | 性能测试迭代次数 | `10` |
 | `--max-ops` | 最大测试算子数（去重后） | `100` |
