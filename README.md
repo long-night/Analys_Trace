@@ -2,7 +2,9 @@
 
 基于 PyTorch Profiler Chrome Trace JSON 的自动化工具集，包含：
 - **Trace 分析器** (`op_testgen analyze`) — 算子统计分析、Excel/CSV 导出（原 `analys_trace_v4.py` 功能升级）
-- **测试生成器** (`op_testgen test`) — 自动生成正确性/性能测试用例，对比 CPU vs CUDA/SWDNN
+- **测试生成器** (`op_testgen test`) — 自动生成并执行正确性/性能测试用例，对比 CPU vs CUDA/SWDNN
+- **测试用例生成** (`op_testgen generate`) — 从 Trace 生成可独立运行的 Python 测试文件
+- **测试用例执行** (`op_testgen run`) — 运行由 `generate` 生成的 Python 测试文件
 
 ## 功能特性
 
@@ -72,8 +74,12 @@ pytest tests/ -v
 # 分析 Trace
 python run.py analyze profiler_trace.json
 
-# 生成测试
+# 生成并执行测试（一步到位）
 python run.py test profiler_trace.json --backend cpu --only-correctness
+
+# 先生成测试文件，再执行（分离模式）
+python run.py generate profiler_trace.json -o tests/test_ops.py --backend cpu
+python run.py run tests/test_ops.py --only-correctness
 ```
 
 **方式二：使用模块方式运行**
@@ -82,8 +88,12 @@ python run.py test profiler_trace.json --backend cpu --only-correctness
 # 分析 Trace
 python -m op_testgen.cli analyze profiler_trace.json
 
-# 生成测试
+# 生成并执行测试（一步到位）
 python -m op_testgen.cli test profiler_trace.json --backend cpu --only-correctness
+
+# 先生成测试文件，再执行（分离模式）
+python -m op_testgen.cli generate profiler_trace.json -o tests/test_ops.py --backend cpu
+python -m op_testgen.cli run tests/test_ops.py --only-correctness
 ```
 
 > **注意**：直接运行时需要确保基础依赖已安装（`pip install torch pyyaml`）。可选：`jinja2`（HTML 报告）、`openpyxl`（Excel 报告）。
@@ -120,7 +130,9 @@ op_testgen analyze profiler_trace.json -o my_analysis
 op_testgen analyze profiler_trace.json --no-summary
 ```
 
-### 3. 测试生成
+### 3. 测试生成与执行
+
+#### 方式一：一步到位（`test` 子命令）
 
 ```bash
 # 完整测试（正确性 + 性能，需要 CUDA）
@@ -142,7 +154,22 @@ op_testgen test profiler_trace.json --format all -o report
 SWDNN=ON op_testgen test profiler_trace.json --backend swdnn
 ```
 
-### 3. 查看报告
+#### 方式二：先生成再执行（`generate` + `run` 子命令）
+
+```bash
+# 生成测试文件（可复用、可版本控制）
+op_testgen generate profiler_trace.json -o tests/test_ops.py --backend cpu --max-ops 50
+
+# 执行生成的测试文件
+op_testgen run tests/test_ops.py --only-correctness
+
+# 使用不同后端运行同一套测试
+op_testgen run tests/test_ops.py --backend cuda --only-performance
+
+# 生成后支持手动编辑测试文件，调整参数或添加断言
+```
+
+### 4. 查看报告
 
 **分析模式输出：**
 - Excel 模式：`operator_analysis.xlsx`（两个工作表：算子总表、Shape统计表）
@@ -165,13 +192,37 @@ SWDNN=ON op_testgen test profiler_trace.json --backend swdnn
 | `--csv` | 强制输出 CSV 格式 | `False` |
 | `--no-summary` | 不显示终端摘要 | `False` |
 
-### `test` 子命令
+### `generate` 子命令
+
+| 参数 | 说明 | 默认值 |
+|------|------|--------|
+| `trace_file` | PyTorch Profiler Chrome Trace JSON 文件路径 | *(必填)* |
+| `-o, --output` | 输出 .py 文件路径 | *(必填)* |
+| `--backend` | 默认后端: `cuda`, `swdnn`, `cpu`, `auto` | `cuda` |
+| `--seed` | 随机种子（影响输入张量生成） | `42` |
+| `--max-ops` | 最大测试算子数（去重后） | `100` |
+| `--op-filter` | 仅生成匹配名称的算子测试（通配符） | *(无)* |
+| `--iters` | 性能测试迭代次数（写入文件默认值） | `10` |
+| `--update-blacklist` | 将未映射算子加入黑名单 | `False` |
+
+### `run` 子命令
+
+| 参数 | 说明 | 默认值 |
+|------|------|--------|
+| `test_file` | 生成的 .py 测试文件路径 | *(必填)* |
+| `--backend` | 后端（覆盖文件默认值）: `cuda`, `swdnn`, `cpu` | 文件内默认值 |
+| `--only-correctness` | 仅正确性测试 | `False` |
+| `--only-performance` | 仅性能测试 | `False` |
+| `--iters` | 性能测试迭代次数（覆盖文件默认值） | 文件内默认值 |
+| `--fail-fast` | 第一个失败即停止 | `False` |
+
+### `test` 子命令（一步到位）
 
 | 参数 | 说明 | 默认值 |
 |------|------|--------|
 | `trace_file` | PyTorch Profiler Chrome Trace JSON 文件路径 | *(必填)* |
 | `--backend` | 对比后端: `cuda`, `swdnn`, `cpu`, `auto` | `cuda` |
-| `-o, --output` | 输出文件路径 | `op_testgen_report.md` |
+| `-o, --output` | 输出报告文件路径 | `op_testgen_report.md` |
 | `--format` | 输出格式: `markdown`, `html`, `json`, `excel`, `all` | `markdown` |
 | `--seed` | 随机种子（影响输入张量生成） | `42` |
 | `--iters` | 性能测试迭代次数 | `10` |
@@ -346,7 +397,12 @@ pytest tests/ -v
 Analys_Trace/
 ├── op_testgen/              # 主包
 │   ├── __init__.py
-│   ├── cli.py               # 命令行入口（analyze / test 子命令）
+│   ├── cli.py               # 命令行入口（analyze / generate / run / test 子命令）
+│   ├── generator/           # 测试用例生成与执行
+│   │   ├── __init__.py
+│   │   ├── test_case_generator.py
+│   │   ├── test_case_runner.py
+│   │   └── template.py
 │   ├── analyzer/            # Trace 统计分析
 │   │   ├── __init__.py
 │   │   └── trace_analyzer.py
@@ -385,6 +441,7 @@ Analys_Trace/
 │   ├── test_mapper.py
 │   ├── test_tensor_builder.py
 │   ├── test_correctness.py
+│   ├── test_generator.py
 │   ├── test_perf.py
 │   └── test_reporter.py
 ├── docs/                    # 设计文档
@@ -429,6 +486,7 @@ ruff check op_testgen/ tests/
 | 版本 | 日期 | 变更 |
 |------|------|------|
 | v0.1.0 | 2026-05 | 初始版本：Trace 解析、算子映射、正确性/性能测试、报告生成、黑名单配置 |
+| v0.2.0 | 2026-05 | 测试流程拆分：新增 `generate` 和 `run` 子命令，支持先生成测试文件再执行 |
 
 ## 贡献
 
