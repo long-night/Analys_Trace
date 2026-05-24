@@ -6,9 +6,10 @@ TEST_FILE_TEMPLATE = '''#!/usr/bin/env python3
 # Default options: backend=${backend}, seed=${seed}, iters=${iters}
 
 import argparse
+import fnmatch
 import importlib
 import sys
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 import torch
 from op_testgen.builder.tensor_builder import TensorBuilder, TestCase
@@ -76,6 +77,8 @@ def main() -> int:
                         help="Stop on first failure")
     parser.add_argument("--seed", type=int, default=${seed},
                         help="Random seed for tensor generation")
+    parser.add_argument("--op-filter", type=str, default=None,
+                        help="Filter operators by name (supports wildcards)")
     args = parser.parse_args()
 
     print("=" * 60)
@@ -83,7 +86,15 @@ def main() -> int:
     print("=" * 60)
 
     test_cases = build_test_cases(seed=args.seed)
-    print(f"\\n构建 {len(test_cases)} 个测试用例")
+
+    if args.op_filter:
+        test_cases = [
+            tc for tc in test_cases
+            if fnmatch.fnmatch(tc.mapped_op.op_info.name, args.op_filter)
+        ]
+        print(f"\\n应用过滤 '{args.op_filter}' 后: {len(test_cases)} 个测试用例")
+    else:
+        print(f"\\n构建 {len(test_cases)} 个测试用例")
 
     if not test_cases:
         print("错误: 没有可测试的算子")
@@ -95,25 +106,35 @@ def main() -> int:
     if not args.only_performance:
         print("\\n执行正确性测试...")
         runner = CorrectnessRunner(fail_fast=args.fail_fast)
-        for tc in test_cases:
-            result = runner.run(tc, backend=args.backend)
-            all_correctness.append(result)
-            status = "通过" if result.passed else "失败"
-            if result.error_message:
-                print(f"  [{status}] {result.op_name}: {result.error_message}")
-            else:
-                print(f"  [{status}] {result.op_name}: max_abs={result.max_abs_err:.2e}, max_rel={result.max_rel_err:.2e}")
+
+        from itertools import groupby
+        for op_name, group in groupby(test_cases, key=lambda tc: tc.mapped_op.op_info.name):
+            group_list = list(group)
+            print(f"\\n  算子: {op_name} ({len(group_list)} 个变体)")
+            for tc in group_list:
+                result = runner.run(tc, backend=args.backend)
+                all_correctness.append(result)
+                status = "通过" if result.passed else "失败"
+                if result.error_message:
+                    print(f"    [{status}] {result.op_name}: {result.error_message}")
+                else:
+                    print(f"    [{status}] {result.op_name}: max_abs={result.max_abs_err:.2e}, max_rel={result.max_rel_err:.2e}")
         passed = sum(1 for r in all_correctness if r.passed)
-        print(f"  通过: {passed}/{len(all_correctness)}")
+        print(f"\\n  通过: {passed}/{len(all_correctness)}")
 
     if not args.only_correctness:
         print("\\n执行性能测试...")
         benchmark = PerfBenchmark(benchmark_iters=args.iters)
-        perf_results = benchmark.run_all(test_cases, backend=args.backend)
-        all_perf.extend(perf_results)
-        if perf_results:
-            avg_speedup = sum(r.speedup for r in perf_results) / len(perf_results)
-            print(f"  平均加速比: {avg_speedup:.2f}x")
+
+        from itertools import groupby
+        for op_name, group in groupby(test_cases, key=lambda tc: tc.mapped_op.op_info.name):
+            group_list = list(group)
+            print(f"\\n  算子: {op_name} ({len(group_list)} 个变体)")
+            perf_results = benchmark.run_all(group_list, backend=args.backend)
+            all_perf.extend(perf_results)
+        if all_perf:
+            avg_speedup = sum(r.speedup for r in all_perf) / len(all_perf)
+            print(f"\\n  平均加速比: {avg_speedup:.2f}x")
 
     print("\\n" + "=" * 60)
     print("测试完成!")

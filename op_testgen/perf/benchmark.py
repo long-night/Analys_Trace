@@ -1,4 +1,5 @@
 """性能测试执行模块"""
+import os
 import time
 from dataclasses import dataclass
 from typing import List, Optional
@@ -91,20 +92,21 @@ class PerfBenchmark:
         category = self.classifier.classify(op_name)
         input_info = self._format_input_info(test_case)
 
+        # 保存原始 SWDNN 状态，确保测试结束后恢复
+        prev_swdnn = os.environ.get("SWDNN", "OFF")
+
         try:
             cpu_time = self._measure_time(test_case, "cpu")
 
-            cuda_time = cpu_time
-            if backend != "cpu" and torch.cuda.is_available():
-                if backend == "swdnn":
-                    import os
-                    os.environ["SWDNN"] = "ON"
-                else:
-                    import os
-                    os.environ["SWDNN"] = "OFF"
-                cuda_time = self._measure_time(test_case, "cuda")
+            target_time = cpu_time
+            if backend == "swdnn":
+                os.environ["SWDNN"] = "ON"
+                target_time = self._measure_time(test_case, "cpu")
+            elif backend == "cuda" and torch.cuda.is_available():
+                os.environ["SWDNN"] = "OFF"
+                target_time = self._measure_time(test_case, "cuda")
 
-            speedup = cpu_time / cuda_time if cuda_time > 0 else 1.0
+            speedup = cpu_time / target_time if target_time > 0 else 1.0
 
             flops = 0.0
             bandwidth = 0.0
@@ -117,21 +119,21 @@ class PerfBenchmark:
             if category == "compute":
                 formula = self.classifier.get_flops_formula(op_name)
                 total_flops = self.metrics.compute_flops(op_name, op.op_info.input_dims, formula)
-                flops = (total_flops / (cuda_time * 1e9)) if cuda_time > 0 else 0.0
+                flops = (total_flops / (target_time * 1e9)) if target_time > 0 else 0.0
 
             elif category in ("memory", "mixed"):
                 bytes_total = self.metrics.compute_bytes(op.op_info.input_dims, dtype)
-                bandwidth = (bytes_total / (cuda_time * 1e9)) if cuda_time > 0 else 0.0
+                bandwidth = (bytes_total / (target_time * 1e9)) if target_time > 0 else 0.0
 
             elif category == "communication":
                 bytes_total = self.metrics.compute_communication_bytes(op.op_info.input_dims, dtype)
-                bandwidth = (bytes_total / (cuda_time * 1e9)) if cuda_time > 0 else 0.0
+                bandwidth = (bytes_total / (target_time * 1e9)) if target_time > 0 else 0.0
 
             result = PerfResult(
                 op_name=op_name,
                 category=category,
                 backend=backend,
-                avg_time_ms=cuda_time * 1000,
+                avg_time_ms=target_time * 1000,
                 flops=flops,
                 bandwidth_gbps=bandwidth,
                 speedup=speedup,
@@ -154,6 +156,10 @@ class PerfBenchmark:
             print(f"    [性能] {op_name}: ERROR - {e}")
             print(f"      input: {input_info}")
             return result
+
+        finally:
+            # 恢复原始 SWDNN 环境变量
+            os.environ["SWDNN"] = prev_swdnn
 
     def run_all(self, test_cases: List[TestCase], backend: str = "cuda") -> List[PerfResult]:
         results = []

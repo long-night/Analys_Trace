@@ -120,14 +120,17 @@ def _prepare_test_cases(args) -> tuple:
             seen_keys.add(key)
             unique_mapped_ops.append(m)
 
-    # 4. 过滤
+    # 4. 按算子名排序（聚类）
+    unique_mapped_ops.sort(key=lambda m: m.op_info.name)
+
+    # 5. 过滤
     if hasattr(args, "op_filter") and args.op_filter:
         import fnmatch
         unique_mapped_ops = [
             m for m in unique_mapped_ops if fnmatch.fnmatch(m.op_info.name, args.op_filter)
         ]
 
-    # 5. 截断
+    # 6. 截断
     if hasattr(args, "max_ops") and args.max_ops > 0 and len(unique_mapped_ops) > args.max_ops:
         unique_mapped_ops = unique_mapped_ops[:args.max_ops]
 
@@ -178,27 +181,37 @@ def cmd_test(args) -> int:
             print(f"\n[4/6] 执行正确性测试...")
             correctness_runner = CorrectnessRunner(fail_fast=args.fail_fast)
             correctness_results = []
-            for tc in test_cases:
-                result = correctness_runner.run(tc, backend=backend)
-                correctness_results.append(result)
-                all_correctness.append(result)
-                status = "通过" if result.passed else "失败"
-                if result.error_message:
-                    print(f"    [{status}] {result.op_name}: {result.error_message}")
-                else:
-                    print(f"    [{status}] {result.op_name}: max_abs={result.max_abs_err:.2e}, max_rel={result.max_rel_err:.2e}, avg_abs={result.avg_abs_err:.2e}, avg_rel={result.avg_rel_err:.2e}")
-                if result.input_info:
-                    print(f"      input: {result.input_info}")
+
+            from itertools import groupby
+            for op_name, group in groupby(test_cases, key=lambda tc: tc.mapped_op.op_info.name):
+                group_list = list(group)
+                print(f"\n  算子: {op_name} ({len(group_list)} 个变体)")
+                for tc in group_list:
+                    result = correctness_runner.run(tc, backend=backend)
+                    correctness_results.append(result)
+                    all_correctness.append(result)
+                    status = "通过" if result.passed else "失败"
+                    if result.error_message:
+                        print(f"    [{status}] {result.op_name}: {result.error_message}")
+                    else:
+                        print(f"    [{status}] {result.op_name}: max_abs={result.max_abs_err:.2e}, max_rel={result.max_rel_err:.2e}, avg_abs={result.avg_abs_err:.2e}, avg_rel={result.avg_rel_err:.2e}")
+                    if result.input_info:
+                        print(f"      input: {result.input_info}")
             passed = sum(1 for r in correctness_results if r.passed)
-            print(f"  通过: {passed}/{len(correctness_results)}")
+            print(f"\n  通过: {passed}/{len(correctness_results)}")
 
         if not args.only_correctness:
             print(f"\n[5/6] 执行性能测试...")
             perf_benchmark = PerfBenchmark(benchmark_iters=args.iters)
-            perf_results = perf_benchmark.run_all(test_cases, backend=backend)
-            all_perf.extend(perf_results)
-            avg_speedup = sum(r.speedup for r in perf_results) / len(perf_results) if perf_results else 1.0
-            print(f"  平均加速比: {avg_speedup:.2f}x")
+
+            from itertools import groupby
+            for op_name, group in groupby(test_cases, key=lambda tc: tc.mapped_op.op_info.name):
+                group_list = list(group)
+                print(f"\n  算子: {op_name} ({len(group_list)} 个变体)")
+                perf_results = perf_benchmark.run_all(group_list, backend=backend)
+                all_perf.extend(perf_results)
+            avg_speedup = sum(r.speedup for r in all_perf) / len(all_perf) if all_perf else 1.0
+            print(f"\n  平均加速比: {avg_speedup:.2f}x")
 
     # 生成报告
     print(f"\n[6/6] 生成报告...")
