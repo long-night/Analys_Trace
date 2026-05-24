@@ -52,6 +52,32 @@ op_testgen --help
 pytest tests/ -v
 ```
 
+### 直接运行（无需安装）
+
+如果你不想通过 pip 安装，可以直接使用以下两种方式运行：
+
+**方式一：使用顶层 run.py 脚本（推荐）**
+
+```bash
+# 分析 Trace
+python run.py analyze profiler_trace.json
+
+# 生成测试
+python run.py test profiler_trace.json --backend cpu --only-correctness
+```
+
+**方式二：使用模块方式运行**
+
+```bash
+# 分析 Trace
+python -m op_testgen.cli analyze profiler_trace.json
+
+# 生成测试
+python -m op_testgen.cli test profiler_trace.json --backend cpu --only-correctness
+```
+
+> **注意**：直接运行时需要确保依赖已安装（`pip install torch pyyaml jinja2`，可选 `openpyxl`）。
+
 ## 快速开始
 
 ### 1. 生成 Profiler Trace
