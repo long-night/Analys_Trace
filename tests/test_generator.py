@@ -3,6 +3,7 @@ import pytest
 from op_testgen.parser.trace_parser import OpInfo
 from op_testgen.mapper.op_mapper import OpMapper, MappedOp
 from op_testgen.generator.test_case_generator import TestCaseGenerator
+from op_testgen.generator.test_case_runner import TestCaseRunner
 
 
 class TestSerializeTestCase:
@@ -177,6 +178,65 @@ class TestGenerateMethod:
                 content = f.read()
             assert content.count("aten::add") >= 1
             assert content.count("aten::mul") >= 1
+        finally:
+            if os.path.exists(output_path):
+                os.unlink(output_path)
+
+
+class TestTestCaseRunner:
+    def test_run_generated_file(self):
+        """测试执行生成的文件"""
+        import os
+        import tempfile
+
+        op_info = OpInfo(
+            name="aten::add",
+            input_dims=[[2, 3], [2, 3]],
+            input_strides=[[3, 1], [3, 1]],
+            input_types=["float", "float"],
+            concrete_inputs=[],
+        )
+        mapper = OpMapper()
+        mapped = mapper.map_operator(op_info)
+        assert mapped is not None
+
+        gen = TestCaseGenerator()
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".py", delete=False) as f:
+            output_path = f.name
+
+        try:
+            gen.generate([mapped], output_path, source_trace="test.json", backend="cpu", seed=42)
+
+            runner = TestCaseRunner()
+            returncode = runner.run(output_path, backend="cpu", only_correctness=True)
+
+            assert returncode == 0
+        finally:
+            if os.path.exists(output_path):
+                os.unlink(output_path)
+
+    def test_run_with_fail_fast(self):
+        """测试 fail-fast 参数传递"""
+        import os
+        import tempfile
+
+        # 创建一个会失败的测试文件
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".py", delete=False) as f:
+            output_path = f.name
+            f.write('''
+import sys
+
+def main():
+    return 1
+
+if __name__ == "__main__":
+    sys.exit(main())
+''')
+
+        try:
+            runner = TestCaseRunner()
+            returncode = runner.run(output_path)
+            assert returncode == 1
         finally:
             if os.path.exists(output_path):
                 os.unlink(output_path)
