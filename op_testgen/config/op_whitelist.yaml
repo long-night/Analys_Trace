@@ -1,0 +1,58 @@
+# 算子白名单: trace_name -> {callable_path, namespace}
+# 不在此列表中的算子将尝试动态反射映射
+
+aten::add:
+  callable_path: "torch.add"
+  namespace: "torch"
+
+aten::mul:
+  callable_path: "torch.mul"
+  namespace: "torch"
+
+aten::sub:
+  callable_path: "torch.sub"
+  namespace: "torch"
+
+aten::div:
+  callable_path: "torch.div"
+  namespace: "torch"
+
+aten::matmul:
+  callable_path: "torch.matmul"
+  namespace: "torch"
+
+aten::mm:
+  callable_path: "torch.mm"
+  namespace: "torch"
+
+aten::bmm:
+  callable_path: "torch.bmm"
+  namespace: "torch"
+
+aten::conv2d:
+  callable_path: "torch.nn.functional.conv2d"
+  namespace: "torch.nn.functional"
+
+aten::linear:
+  callable_path: "torch.nn.functional.linear"
+  namespace: "torch.nn.functional"
+
+aten::relu:
+  callable_path: "torch.nn.functional.relu"
+  namespace: "torch.nn.functional"
+
+aten::softmax:
+  callable_path: "torch.softmax"
+  namespace: "torch"
+
+aten::max:
+  callable_path: "torch.max"
+  namespace: "torch"
+
+aten::sum:
+  callable_path: "torch.sum"
+  namespace: "torch"
+
+aten::mean:
+  callable_path: "torch.mean"
+  namespace: "torch"

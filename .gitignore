@@ -7,3 +7,7 @@
 # 生成的 Excel 文件
 *.xlsx
 *.swp
+*.egg-info/
+__pycache__/
+*.pyc
+.pytest_cache/

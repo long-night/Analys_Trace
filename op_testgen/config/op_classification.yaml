@@ -1,0 +1,44 @@
+# 算子分类与性能指标计算公式
+# category: compute | memory | communication | mixed
+# flops_formula / bytes_formula: 使用 Python eval 安全的表达式
+
+aten::matmul:
+  category: compute
+  flops_formula: "2 * M * N * K"
+
+aten::mm:
+  category: compute
+  flops_formula: "2 * M * N * K"
+
+aten::bmm:
+  category: compute
+  flops_formula: "2 * B * M * N * K"
+
+aten::conv2d:
+  category: compute
+  flops_formula: "2 * N * Cout * Hout * Wout * Cin * K * K"
+
+aten::linear:
+  category: compute
+  flops_formula: "2 * M * N * K"
+
+aten::add:
+  category: memory
+
+aten::mul:
+  category: memory
+
+aten::relu:
+  category: memory
+
+aten::softmax:
+  category: compute
+  flops_formula: "5 * N"
+
+c10d::allreduce_:
+  category: communication
+  bytes_formula: "2 * numel * element_size"
+
+nccl:all_reduce:
+  category: communication
+  bytes_formula: "2 * numel * element_size"

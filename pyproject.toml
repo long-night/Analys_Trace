@@ -1,0 +1,21 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "op_testgen"
+version = "0.1.0"
+description = "PyTorch Profiler 自动化测试生成器"
+requires-python = ">=3.10"
+dependencies = [
+    "torch",
+    "pyyaml",
+    "jinja2",
+]
+
+[project.optional-dependencies]
+excel = ["openpyxl"]
+dev = ["pytest", "pytest-cov", "ruff", "mypy"]
+
+[project.scripts]
+op_testgen = "op_testgen.cli:main"
