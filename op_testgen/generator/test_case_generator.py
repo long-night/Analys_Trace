@@ -37,3 +37,39 @@ class TestCaseGenerator:
             iters=options.get("iters", 10),
             test_cases_data_repr=repr(data),
         )
+
+    def generate(
+        self,
+        mapped_ops: List[MappedOp],
+        output_path: str,
+        source_trace: str = "",
+        backend: str = "cuda",
+        seed: int = 42,
+        iters: int = 10,
+    ) -> str:
+        """生成测试文件
+
+        Args:
+            mapped_ops: 映射后的算子列表
+            output_path: 输出 .py 文件路径
+            source_trace: 来源 trace 文件路径（用于注释）
+            backend: 默认后端
+            seed: 随机种子
+            iters: 性能测试迭代次数
+
+        Returns:
+            生成的文件路径
+        """
+        data = [self._serialize_test_case(m) for m in mapped_ops]
+        options = {
+            "source_trace": source_trace,
+            "backend": backend,
+            "seed": seed,
+            "iters": iters,
+        }
+        content = self._render_template(data, options)
+
+        with open(output_path, "w", encoding="utf-8") as f:
+            f.write(content)
+
+        return output_path

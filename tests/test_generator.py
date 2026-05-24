@@ -108,3 +108,75 @@ class TestTemplateRendering:
         content = gen._render_template(data, options)
 
         ast.parse(content)
+
+
+class TestGenerateMethod:
+    def test_generate_creates_file(self):
+        """测试 generate 方法创建文件"""
+        import os
+        import tempfile
+
+        op_info = OpInfo(
+            name="aten::add",
+            input_dims=[[2, 3], [2, 3]],
+            input_strides=[[3, 1], [3, 1]],
+            input_types=["float", "float"],
+            concrete_inputs=[],
+        )
+        mapper = OpMapper()
+        mapped = mapper.map_operator(op_info)
+        assert mapped is not None
+
+        gen = TestCaseGenerator()
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".py", delete=False) as f:
+            output_path = f.name
+
+        try:
+            gen.generate([mapped], output_path, source_trace="test.json", backend="cpu", seed=42)
+            assert os.path.exists(output_path)
+            with open(output_path, "r", encoding="utf-8") as f:
+                content = f.read()
+            assert "TEST_CASES_DATA" in content
+            assert "aten::add" in content
+        finally:
+            if os.path.exists(output_path):
+                os.unlink(output_path)
+
+    def test_generate_with_multiple_ops(self):
+        """测试生成包含多个算子的文件"""
+        import os
+        import tempfile
+
+        op1 = OpInfo(
+            name="aten::add",
+            input_dims=[[2, 3], [2, 3]],
+            input_strides=[[3, 1], [3, 1]],
+            input_types=["float", "float"],
+            concrete_inputs=[],
+        )
+        op2 = OpInfo(
+            name="aten::mul",
+            input_dims=[[2, 3], [2, 3]],
+            input_strides=[[3, 1], [3, 1]],
+            input_types=["float", "float"],
+            concrete_inputs=[],
+        )
+        mapper = OpMapper()
+        mapped1 = mapper.map_operator(op1)
+        mapped2 = mapper.map_operator(op2)
+        assert mapped1 is not None
+        assert mapped2 is not None
+
+        gen = TestCaseGenerator()
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".py", delete=False) as f:
+            output_path = f.name
+
+        try:
+            gen.generate([mapped1, mapped2], output_path, source_trace="test.json")
+            with open(output_path, "r", encoding="utf-8") as f:
+                content = f.read()
+            assert content.count("aten::add") >= 1
+            assert content.count("aten::mul") >= 1
+        finally:
+            if os.path.exists(output_path):
+                os.unlink(output_path)
