@@ -47,3 +47,64 @@ class TestSerializeTestCase:
 
         assert data["op_name"] == "aten::sum"
         assert data["concrete_inputs"] == [0, True]
+
+
+class TestTemplateRendering:
+    def test_rendered_file_contains_header(self):
+        """测试生成的文件包含头部注释"""
+        gen = TestCaseGenerator()
+        data = [
+            {
+                "op_name": "aten::add",
+                "callable_path": "torch.add",
+                "input_dims": [[2, 3], [2, 3]],
+                "input_strides": [[3, 1], [3, 1]],
+                "input_types": ["float", "float"],
+                "concrete_inputs": [],
+            }
+        ]
+        options = {"source_trace": "test.json", "backend": "cpu", "seed": 42}
+        content = gen._render_template(data, options)
+
+        assert "Auto-generated test cases" in content
+        assert "test.json" in content
+
+    def test_rendered_file_contains_test_data(self):
+        """测试生成的文件包含 TEST_CASES_DATA"""
+        gen = TestCaseGenerator()
+        data = [
+            {
+                "op_name": "aten::add",
+                "callable_path": "torch.add",
+                "input_dims": [[2, 3], [2, 3]],
+                "input_strides": [[3, 1], [3, 1]],
+                "input_types": ["float", "float"],
+                "concrete_inputs": [],
+            }
+        ]
+        options = {"source_trace": "test.json", "backend": "cpu", "seed": 42}
+        content = gen._render_template(data, options)
+
+        assert "TEST_CASES_DATA" in content
+        assert "aten::add" in content
+        assert "torch.add" in content
+
+    def test_rendered_file_is_valid_python(self):
+        """测试生成的文件是合法 Python 语法"""
+        import ast
+
+        gen = TestCaseGenerator()
+        data = [
+            {
+                "op_name": "aten::add",
+                "callable_path": "torch.add",
+                "input_dims": [[2, 3], [2, 3]],
+                "input_strides": [[3, 1], [3, 1]],
+                "input_types": ["float", "float"],
+                "concrete_inputs": [],
+            }
+        ]
+        options = {"source_trace": "test.json", "backend": "cpu", "seed": 42}
+        content = gen._render_template(data, options)
+
+        ast.parse(content)
