@@ -47,6 +47,7 @@ def cmd_analyze(args) -> int:
     # 导出
     print(f"\n[3/3] 导出报告...")
     use_excel = _check_openpyxl() and not args.csv
+    output_file = args.output if args.output else "operator_analysis.xlsx"
 
     if args.csv or not use_excel:
         operators_file = args.output if args.output else "cpu_operators.csv"
@@ -58,7 +59,6 @@ def cmd_analyze(args) -> int:
         print(f"  CSV 算子总表: {operators_file}")
         print(f"  CSV Shape统计表: {shapes_file}")
     else:
-        output_file = args.output if args.output else "operator_analysis.xlsx"
         if not output_file.endswith(".xlsx"):
             output_file += ".xlsx"
         if analyzer.export_to_excel(output_file):
@@ -66,6 +66,21 @@ def cmd_analyze(args) -> int:
 
     if not args.no_summary:
         analyzer.print_summary()
+
+    if args.hierarchy or args.call_chains or args.detect_recursion or args.export_tree:
+        analyzer.print_hierarchical_summary()
+
+    if args.export_tree:
+        analyzer._ensure_hierarchy()
+        assert analyzer._hierarchy_analyzer is not None
+        analyzer._hierarchy_analyzer.export_call_tree_text(args.export_tree)
+        print(f"调用树已导出: {args.export_tree}")
+
+    if args.hierarchy and not args.csv:
+        base, ext = os.path.splitext(output_file)
+        hierarchy_file = f"{base}_hierarchy{ext}"
+        if analyzer.export_hierarchy_to_excel(output_file):
+            print(f"层级数据已添加到 Excel: {output_file}")
 
     print("\n" + "=" * 60)
     print("分析完成!")
@@ -373,6 +388,13 @@ def main(argv: Optional[list] = None) -> int:
     analyze_parser.add_argument("-o", "--output", help="输出文件路径")
     analyze_parser.add_argument("--csv", action="store_true", help="强制输出 CSV 格式")
     analyze_parser.add_argument("--no-summary", action="store_true", help="不显示摘要")
+    analyze_parser.add_argument("--hierarchy", action="store_true", help="启用层级分析")
+    analyze_parser.add_argument("--self-time-top", type=int, default=10, help="自耗时排名数量")
+    analyze_parser.add_argument("--call-chains", action="store_true", help="输出高频调用链")
+    analyze_parser.add_argument("--detect-recursion", action="store_true", help="检测递归模式")
+    analyze_parser.add_argument("--export-tree", type=str, default=None, help="导出调用树到文件")
+    analyze_parser.add_argument("--max-chain-depth", type=int, default=10, help="调用链最大深度")
+    analyze_parser.add_argument("--min-chain-occurrence", type=int, default=2, help="调用链最小出现次数")
 
     # === test 子命令 ===
     test_parser = subparsers.add_parser(

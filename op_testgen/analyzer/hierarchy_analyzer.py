@@ -5,7 +5,6 @@ from dataclasses import dataclass
 from collections import defaultdict
 
 from op_testgen.parser.trace_parser import HierarchicalOpInfo
-from op_testgen.analyzer.trace_analyzer import OperatorStats
 
 
 @dataclass
@@ -44,8 +43,9 @@ class HierarchyAnalyzer:
             self._all_nodes.append(node)
             self._dfs_collect(node.children)
 
-    def get_self_time_stats(self) -> Dict[str, OperatorStats]:
+    def get_self_time_stats(self):
         """基于自耗时的算子统计（排除子算子耗时）"""
+        from op_testgen.analyzer.trace_analyzer import OperatorStats
         stats: Dict[str, OperatorStats] = {}
         for node in self.all_nodes:
             name = node.name
@@ -55,8 +55,9 @@ class HierarchyAnalyzer:
             stats[name].total_duration_us += node.self_duration_us
         return stats
 
-    def get_total_time_stats(self) -> Dict[str, OperatorStats]:
+    def get_total_time_stats(self):
         """基于总耗时的算子统计（含子算子）"""
+        from op_testgen.analyzer.trace_analyzer import OperatorStats
         stats: Dict[str, OperatorStats] = {}
         for node in self.all_nodes:
             name = node.name
@@ -113,8 +114,9 @@ class HierarchyAnalyzer:
         results.sort(key=lambda x: x.occurrence_count, reverse=True)
         return results
 
-    def get_root_ops_stats(self) -> Dict[str, OperatorStats]:
+    def get_root_ops_stats(self):
         """根节点（入口算子）统计"""
+        from op_testgen.analyzer.trace_analyzer import OperatorStats
         stats: Dict[str, OperatorStats] = {}
         for node in self.root_ops:
             name = node.name

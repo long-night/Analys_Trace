@@ -5,7 +5,8 @@ import sys
 from collections import defaultdict
 from typing import Dict, List, Optional
 
-from op_testgen.parser.trace_parser import OpInfo
+from op_testgen.parser.trace_parser import OpInfo, HierarchicalOpInfo, TraceParser
+from op_testgen.analyzer.hierarchy_analyzer import HierarchyAnalyzer
 
 
 class ShapeStats:
@@ -120,6 +121,8 @@ class TraceAnalyzer:
     def __init__(self, op_infos: List[OpInfo]):
         self.op_infos = op_infos
         self.operators: Dict[str, OperatorStats] = {}
+        self._hierarchy: Optional[List[HierarchicalOpInfo]] = None
+        self._hierarchy_analyzer: Optional[HierarchyAnalyzer] = None
         self._analyze()
 
     def _analyze(self):
@@ -326,6 +329,124 @@ class TraceAnalyzer:
                     except Exception:
                         pass
                 ws.column_dimensions[col_letter].width = min(max_length + 2, 80)
+
+        wb.save(output_file)
+        return True
+
+    def _ensure_hierarchy(self):
+        if self._hierarchy is None:
+            parser = TraceParser("")
+            self._hierarchy = parser._build_hierarchy(self.op_infos)
+            self._hierarchy_analyzer = HierarchyAnalyzer(self._hierarchy)
+
+    def print_hierarchical_summary(self):
+        self._ensure_hierarchy()
+        assert self._hierarchy_analyzer is not None
+
+        print("\n" + "=" * 60)
+        print("层级分析摘要".center(60))
+        print("=" * 60)
+
+        self_time_stats = self._hierarchy_analyzer.get_self_time_stats()
+        total_self_time = sum(s.total_duration_us for s in self_time_stats.values())
+
+        print("\n【自耗时最高的算子 TOP 10】（排除子算子影响）")
+        top_self = sorted(self_time_stats.values(), key=lambda x: x.total_duration_us, reverse=True)[:10]
+        for i, op in enumerate(top_self, 1):
+            pct = (op.total_duration_us / total_self_time * 100) if total_self_time > 0 else 0
+            print(f"  {i:2d}. {op.name}")
+            print(f"      自耗时: {op.total_duration_ms:.2f} ms ({pct:.1f}%), 调用: {op.call_count} 次")
+
+        chains = self._hierarchy_analyzer.get_call_chains()
+        if chains:
+            print("\n【高频调用链 TOP 5】")
+            for i, chain in enumerate(chains[:5], 1):
+                chain_str = " -> ".join(chain.chain)
+                print(f"  {i}. {chain_str} (出现 {chain.occurrence_count} 次, 平均耗时: {chain.avg_duration_ms:.2f} ms)")
+
+        patterns = self._hierarchy_analyzer.find_recursive_patterns()
+        if patterns:
+            print("\n【检测到的循环调用模式】")
+            for i, pattern in enumerate(patterns[:5], 1):
+                cycle_str = " -> ".join(pattern.cycle)
+                print(f"  {i}. {cycle_str} (出现 {pattern.occurrence_count} 次, 最大深度: {pattern.depth})")
+
+        depth_dist = self._hierarchy_analyzer.get_depth_distribution()
+        if depth_dist:
+            print("\n【调用深度分布】")
+            for depth, count in depth_dist.items():
+                label = "根" if depth == 0 else f"深度 {depth}"
+                print(f"  {label}: {count} 个算子")
+
+        print("=" * 60)
+
+    def export_hierarchy_to_csv(self, output_file: str):
+        self._ensure_hierarchy()
+        assert self._hierarchy_analyzer is not None
+
+        with open(output_file, "w", newline="", encoding="utf-8") as f:
+            writer = csv.DictWriter(f, fieldnames=[
+                "算子名称", "调用深度", "是否为根", "自耗时(ms)", "总耗时(ms)",
+                "子算子数", "调用次数"
+            ])
+            writer.writeheader()
+
+            for node in self._hierarchy_analyzer.all_nodes:
+                writer.writerow({
+                    "算子名称": node.name,
+                    "调用深度": node.depth,
+                    "是否为根": "是" if node.is_root else "否",
+                    "自耗时(ms)": round(node.self_duration_us / 1000.0, 4),
+                    "总耗时(ms)": round(node.duration_us / 1000.0, 4),
+                    "子算子数": len(node.children),
+                    "调用次数": 1,
+                })
+
+    def export_hierarchy_to_excel(self, output_file: str) -> bool:
+        self._ensure_hierarchy()
+        assert self._hierarchy_analyzer is not None
+
+        try:
+            import openpyxl
+            from openpyxl.styles import Font, Alignment, PatternFill
+            from openpyxl.utils import get_column_letter
+        except ImportError:
+            print("错误: openpyxl 未安装，无法导出 Excel")
+            return False
+
+        wb = openpyxl.load_workbook(output_file)
+
+        header_fill = PatternFill(start_color="366092", end_color="366092", fill_type="solid")
+        header_font = Font(bold=True, color="FFFFFF")
+        header_align = Alignment(horizontal="center", vertical="center")
+
+        ws_self = wb.create_sheet("自耗时排名")
+        headers = ["算子名称", "调用深度", "是否为根", "自耗时(ms)", "总耗时(ms)", "子算子数"]
+        ws_self.append(headers)
+        for col_num, _ in enumerate(headers, 1):
+            cell = ws_self.cell(row=1, column=col_num)
+            cell.fill = header_fill
+            cell.font = header_font
+            cell.alignment = header_align
+
+        for node in self._hierarchy_analyzer.all_nodes:
+            ws_self.append([
+                node.name, node.depth, "是" if node.is_root else "否",
+                round(node.self_duration_us / 1000.0, 4),
+                round(node.duration_us / 1000.0, 4),
+                len(node.children),
+            ])
+
+        for col in ws_self.columns:
+            max_length = 0
+            col_letter = get_column_letter(col[0].column)
+            for cell in col:
+                try:
+                    if cell.value:
+                        max_length = max(max_length, len(str(cell.value)))
+                except Exception:
+                    pass
+            ws_self.column_dimensions[col_letter].width = min(max_length + 2, 80)
 
         wb.save(output_file)
         return True
