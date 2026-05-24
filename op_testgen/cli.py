@@ -146,8 +146,18 @@ def cmd_test(args) -> int:
         if not args.only_performance:
             print(f"\n[4/6] 执行正确性测试...")
             correctness_runner = CorrectnessRunner(fail_fast=args.fail_fast)
-            correctness_results = correctness_runner.run_all(test_cases, backend=backend)
-            all_correctness.extend(correctness_results)
+            correctness_results = []
+            for tc in test_cases:
+                result = correctness_runner.run(tc, backend=backend)
+                correctness_results.append(result)
+                all_correctness.append(result)
+                status = "通过" if result.passed else "失败"
+                if result.error_message:
+                    print(f"    [{status}] {result.op_name}: {result.error_message}")
+                else:
+                    print(f"    [{status}] {result.op_name}: max_abs={result.max_abs_err:.2e}, max_rel={result.max_rel_err:.2e}, avg_abs={result.avg_abs_err:.2e}, avg_rel={result.avg_rel_err:.2e}")
+                if result.input_info:
+                    print(f"      input: {result.input_info}")
             passed = sum(1 for r in correctness_results if r.passed)
             print(f"  通过: {passed}/{len(correctness_results)}")
 

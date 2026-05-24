@@ -22,11 +22,10 @@ class PerfResult:
     bandwidth_gbps: float = 0.0
     speedup: float = 1.0
     error_message: Optional[str] = None
+    input_info: str = ""
 
 
 class PerfBenchmark:
-    """性能测试执行器"""
-
     def __init__(self, warmup_iters: int = 3, benchmark_iters: int = 10):
         self.settings = get_settings()
         self.warmup_iters = warmup_iters
@@ -34,8 +33,21 @@ class PerfBenchmark:
         self.classifier = OpClassifier()
         self.metrics = MetricsCalculator()
 
+    def _format_input_info(self, test_case: TestCase) -> str:
+        parts = []
+        for i, t in enumerate(test_case.input_tensors):
+            if isinstance(t, torch.Tensor):
+                parts.append(f"T{i}={list(t.shape)}:{str(t.dtype).replace('torch.', '')}")
+            elif isinstance(t, list):
+                shapes = [list(x.shape) if isinstance(x, torch.Tensor) else str(x) for x in t]
+                parts.append(f"T{i}=[{shapes}]")
+        if test_case.args:
+            parts.append(f"args={test_case.args}")
+        if test_case.kwargs:
+            parts.append(f"kwargs={test_case.kwargs}")
+        return "; ".join(parts)
+
     def _measure_time(self, test_case: TestCase, device: str) -> float:
-        """测量算子平均执行时间（秒）"""
         op = test_case.mapped_op
         tensors = [t.clone().to(device) for t in test_case.input_tensors]
         kwargs = {k: v for k, v in test_case.kwargs.items()}
@@ -57,10 +69,10 @@ class PerfBenchmark:
         return (end - start) / self.benchmark_iters
 
     def run(self, test_case: TestCase, backend: str = "cuda") -> PerfResult:
-        """执行单个算子的性能测试"""
         op = test_case.mapped_op
         op_name = op.op_info.name
         category = self.classifier.classify(op_name)
+        input_info = self._format_input_info(test_case)
 
         try:
             cpu_time = self._measure_time(test_case, "cpu")
@@ -98,7 +110,7 @@ class PerfBenchmark:
                 bytes_total = self.metrics.compute_communication_bytes(op.op_info.input_dims, dtype)
                 bandwidth = (bytes_total / (cuda_time * 1e9)) if cuda_time > 0 else 0.0
 
-            return PerfResult(
+            result = PerfResult(
                 op_name=op_name,
                 category=category,
                 backend=backend,
@@ -106,16 +118,29 @@ class PerfBenchmark:
                 flops=flops,
                 bandwidth_gbps=bandwidth,
                 speedup=speedup,
+                input_info=input_info,
             )
 
+            print(f"    [性能] {op_name}: {result.avg_time_ms:.4f}ms, speedup={result.speedup:.2f}x, flops={result.flops:.2f}GFLOPS, bandwidth={result.bandwidth_gbps:.2f}GB/s")
+            print(f"      input: {input_info}")
+
+            return result
+
         except Exception as e:
-            return PerfResult(
+            result = PerfResult(
                 op_name=op_name,
                 category=category,
                 backend=backend,
                 error_message=str(e),
+                input_info=input_info,
             )
+            print(f"    [性能] {op_name}: ERROR - {e}")
+            print(f"      input: {input_info}")
+            return result
 
     def run_all(self, test_cases: List[TestCase], backend: str = "cuda") -> List[PerfResult]:
-        """批量性能测试"""
-        return [self.run(tc, backend) for tc in test_cases]
+        results = []
+        for tc in test_cases:
+            result = self.run(tc, backend)
+            results.append(result)
+        return results

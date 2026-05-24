@@ -21,6 +21,7 @@ class CorrectnessResult:
     backend: str = "cuda"
     error_message: Optional[str] = None
     output_shapes_match: bool = True
+    input_info: str = ""
 
 
 class CorrectnessRunner:
@@ -68,13 +69,26 @@ class CorrectnessRunner:
             "avg_rel": float(rel_err.mean()),
         }
 
+    def _format_input_info(self, test_case: TestCase) -> str:
+        parts = []
+        for i, t in enumerate(test_case.input_tensors):
+            if isinstance(t, torch.Tensor):
+                parts.append(f"T{i}={list(t.shape)}:{str(t.dtype).replace('torch.', '')}")
+            elif isinstance(t, list):
+                shapes = [list(x.shape) if isinstance(x, torch.Tensor) else str(x) for x in t]
+                parts.append(f"T{i}=[{shapes}]")
+        if test_case.args:
+            parts.append(f"args={test_case.args}")
+        if test_case.kwargs:
+            parts.append(f"kwargs={test_case.kwargs}")
+        return "; ".join(parts)
+
     def _run_single(self, test_case: TestCase, backend: str) -> CorrectnessResult:
-        """执行单个测试用例的正确性对比"""
         op = test_case.mapped_op
         op_name = op.op_info.name
+        input_info = self._format_input_info(test_case)
 
         try:
-            cpu_kwargs = {k: v for k, v in test_case.kwargs.items()}
             cpu_kwargs = {k: v for k, v in test_case.kwargs.items()}
 
             def to_cpu(args):
@@ -119,17 +133,19 @@ class CorrectnessRunner:
                     if not cpu_out:
                         return CorrectnessResult(
                             op_name=op_name, passed=True, backend=backend,
-                            error_message="Non-tensor output, shape check only"
+                            error_message="Non-tensor output, shape check only",
+                            input_info=input_info,
                         )
                     cpu_out = cpu_out[0]
                 else:
                     return CorrectnessResult(
                         op_name=op_name, passed=True, backend=backend,
-                        error_message="Non-tensor output, shape check only"
+                        error_message="Non-tensor output, shape check only",
+                        input_info=input_info,
                     )
 
             if backend == "cpu":
-                return CorrectnessResult(op_name=op_name, passed=True, backend="cpu")
+                return CorrectnessResult(op_name=op_name, passed=True, backend="cpu", input_info=input_info)
 
             # 2. CUDA / SWDNN
             if backend == "swdnn":
@@ -140,7 +156,8 @@ class CorrectnessRunner:
             if not torch.cuda.is_available():
                 return CorrectnessResult(
                     op_name=op_name, passed=False, backend=backend,
-                    error_message="CUDA not available"
+                    error_message="CUDA not available",
+                    input_info=input_info,
                 )
 
             cuda_kwargs = {k: v for k, v in test_case.kwargs.items()}
@@ -194,6 +211,7 @@ class CorrectnessRunner:
                 avg_abs_err=errors["avg_abs"],
                 avg_rel_err=errors["avg_rel"],
                 backend=backend,
+                input_info=input_info,
             )
 
         except Exception as e:
@@ -202,6 +220,7 @@ class CorrectnessRunner:
                 passed=False,
                 backend=backend,
                 error_message=str(e),
+                input_info=input_info,
             )
 
     def run(self, test_case: TestCase, backend: str = "cuda") -> CorrectnessResult:

@@ -27,24 +27,28 @@ class MarkdownReporter(BaseReporter):
 
         # 正确性测试
         lines.append("## 正确性测试结果\n")
-        lines.append("| 算子名称 | 后端 | 状态 | 最大绝对误差 | 最大相对误差 | 错误信息 |")
-        lines.append("|---------|------|------|-------------|-------------|---------|")
+        lines.append("| 算子名称 | 后端 | 状态 | 最大绝对误差 | 最大相对误差 | 平均绝对误差 | 平均相对误差 | 输入参数 | 错误信息 |")
+        lines.append("|---------|------|------|-------------|-------------|-------------|-------------|---------|---------|")
         for r in correctness_results:
             status = "✅ 通过" if r.passed else "❌ 失败"
-            abs_err = f"{r.max_abs_err:.2e}" if r.max_abs_err else "-"
-            rel_err = f"{r.max_rel_err:.2e}" if r.max_rel_err else "-"
+            max_abs = f"{r.max_abs_err:.2e}" if r.max_abs_err else "-"
+            max_rel = f"{r.max_rel_err:.2e}" if r.max_rel_err else "-"
+            avg_abs = f"{r.avg_abs_err:.2e}" if r.avg_abs_err else "-"
+            avg_rel = f"{r.avg_rel_err:.2e}" if r.avg_rel_err else "-"
+            input_info = r.input_info or ""
             err_msg = r.error_message or ""
-            lines.append(f"| {r.op_name} | {r.backend} | {status} | {abs_err} | {rel_err} | {err_msg} |")
+            lines.append(f"| {r.op_name} | {r.backend} | {status} | {max_abs} | {max_rel} | {avg_abs} | {avg_rel} | {input_info} | {err_msg} |")
         lines.append("")
 
         # 性能测试
         lines.append("## 性能测试结果\n")
-        lines.append("| 算子名称 | 分类 | 平均耗时(ms) | GFLOPS | 带宽(GB/s) | 加速比 |")
-        lines.append("|---------|------|------------|--------|-----------|--------|")
+        lines.append("| 算子名称 | 分类 | 平均耗时(ms) | GFLOPS | 带宽(GB/s) | 加速比 | 输入参数 |")
+        lines.append("|---------|------|------------|--------|-----------|--------|---------|")
         for r in perf_results:
             flops = f"{r.flops:.2f}" if r.flops else "-"
             bw = f"{r.bandwidth_gbps:.2f}" if r.bandwidth_gbps else "-"
-            lines.append(f"| {r.op_name} | {r.category} | {r.avg_time_ms:.4f} | {flops} | {bw} | {r.speedup:.2f}x |")
+            input_info = r.input_info or ""
+            lines.append(f"| {r.op_name} | {r.category} | {r.avg_time_ms:.4f} | {flops} | {bw} | {r.speedup:.2f}x | {input_info} |")
         lines.append("")
 
         with open(output_path, "w", encoding="utf-8") as f:
