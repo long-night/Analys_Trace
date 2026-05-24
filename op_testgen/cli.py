@@ -17,6 +17,8 @@ from op_testgen.perf.benchmark import PerfBenchmark
 from op_testgen.reporter.markdown_reporter import MarkdownReporter
 from op_testgen.reporter.html_reporter import HTMLReporter
 from op_testgen.reporter.excel_reporter import ExcelReporter
+from op_testgen.generator.test_case_generator import TestCaseGenerator
+from op_testgen.generator.test_case_runner import TestCaseRunner
 
 
 def _check_openpyxl() -> bool:
@@ -71,26 +73,21 @@ def cmd_analyze(args) -> int:
     return 0
 
 
-def cmd_test(args) -> int:
-    """test 子命令：测试生成与执行"""
-    print("=" * 60)
-    print("PyTorch Profiler 自动化测试生成器")
-    print("=" * 60)
+def _prepare_test_cases(args) -> tuple:
+    """提取 test 和 generate 子命令的公共逻辑
 
+    Returns:
+        (unique_mapped_ops, test_cases) 或 (unique_mapped_ops, None)
+    """
     # 1. 解析 Trace
-    print("\n[1/6] 解析 Trace 文件...")
     parser_obj = TraceParser(args.trace_file)
     op_infos = parser_obj.parse()
-    print(f"  发现 {len(op_infos)} 个算子")
 
     # 2. 映射算子
-    print("\n[2/6] 映射算子...")
     mapper = OpMapper()
     mapped_ops = mapper.map_all(op_infos)
-    print(f"  成功映射 {len(mapped_ops)} 个算子")
 
-    # 3. 去重 + 构建测试用例
-    print("\n[3/6] 去重并构建测试用例...")
+    # 3. 去重
     seen_keys = set()
     unique_mapped_ops = []
     for m in mapped_ops:
@@ -108,23 +105,41 @@ def cmd_test(args) -> int:
             seen_keys.add(key)
             unique_mapped_ops.append(m)
 
-    print(f"  去重前: {len(mapped_ops)} 个, 去重后: {len(unique_mapped_ops)} 个")
-
-    if args.op_filter:
+    # 4. 过滤
+    if hasattr(args, "op_filter") and args.op_filter:
         import fnmatch
-        unique_mapped_ops = [m for m in unique_mapped_ops if fnmatch.fnmatch(m.op_info.name, args.op_filter)]
-        print(f"  名称过滤后剩余: {len(unique_mapped_ops)} 个")
+        unique_mapped_ops = [
+            m for m in unique_mapped_ops if fnmatch.fnmatch(m.op_info.name, args.op_filter)
+        ]
 
-    if args.max_ops > 0 and len(unique_mapped_ops) > args.max_ops:
-        print(f"  超过 --max-ops={args.max_ops}，截断至前 {args.max_ops} 个")
+    # 5. 截断
+    if hasattr(args, "max_ops") and args.max_ops > 0 and len(unique_mapped_ops) > args.max_ops:
         unique_mapped_ops = unique_mapped_ops[:args.max_ops]
+
+    if not unique_mapped_ops:
+        return [], None
+
+    # 6. 构建测试用例
+    builder = TensorBuilder(seed=args.seed)
+    test_cases = [builder.build(m) for m in unique_mapped_ops]
+
+    return unique_mapped_ops, test_cases, mapper
+
+
+def cmd_test(args) -> int:
+    """test 子命令：测试生成与执行"""
+    print("=" * 60)
+    print("PyTorch Profiler 自动化测试生成器")
+    print("=" * 60)
+
+    print("\n[1/4] 解析并准备测试用例...")
+    unique_mapped_ops, test_cases, mapper = _prepare_test_cases(args)
 
     if not unique_mapped_ops:
         print("错误：没有可测试的算子")
         return 1
 
-    builder = TensorBuilder(seed=args.seed)
-    test_cases = [builder.build(m) for m in unique_mapped_ops]
+    print(f"  成功映射并去重: {len(unique_mapped_ops)} 个算子")
     print(f"  构建 {len(test_cases)} 个测试用例")
 
     # 确定后端
@@ -246,6 +261,84 @@ def cmd_test(args) -> int:
     return 0
 
 
+def cmd_generate(args) -> int:
+    """generate 子命令：生成测试用例文件"""
+    print("=" * 60)
+    print("PyTorch Profiler 测试用例生成器")
+    print("=" * 60)
+
+    print("\n[1/2] 解析并准备测试用例...")
+    unique_mapped_ops, _, mapper = _prepare_test_cases(args)
+
+    if not unique_mapped_ops:
+        print("错误：没有可测试的算子")
+        return 1
+
+    print(f"  成功映射并去重: {len(unique_mapped_ops)} 个算子")
+
+    print("\n[2/2] 生成测试文件...")
+    generator = TestCaseGenerator()
+    output_path = generator.generate(
+        mapped_ops=unique_mapped_ops,
+        output_path=args.output,
+        source_trace=args.trace_file,
+        backend=args.backend,
+        seed=args.seed,
+        iters=args.iters,
+    )
+    print(f"  测试文件: {output_path}")
+
+    print("\n" + "=" * 60)
+    print("生成完成!")
+    print(f"运行: op_testgen run {output_path}")
+    print("=" * 60)
+
+    # 黑名单更新提示
+    if args.update_blacklist and mapper.unmapped_ops:
+        print("\n" + "-" * 60)
+        print(f"发现 {len(mapper.unmapped_ops)} 个未映射算子:")
+        for name in sorted(mapper.unmapped_ops):
+            print(f"  - {name}")
+        print("-" * 60)
+        try:
+            answer = input(f"\n是否将这 {len(mapper.unmapped_ops)} 个算子加入黑名单? [y/N]: ")
+            if answer.strip().lower() in ("y", "yes"):
+                OpMapper.update_blacklist_yaml(sorted(mapper.unmapped_ops))
+            else:
+                print("已取消，未更新黑名单")
+        except (EOFError, KeyboardInterrupt):
+            print("\n已取消，未更新黑名单")
+
+    return 0
+
+
+def cmd_run(args) -> int:
+    """run 子命令：执行生成的测试文件"""
+    print("=" * 60)
+    print("执行生成的测试文件")
+    print("=" * 60)
+
+    if not os.path.exists(args.test_file):
+        print(f"错误：文件不存在: {args.test_file}")
+        return 1
+
+    runner = TestCaseRunner()
+    returncode = runner.run(
+        file_path=args.test_file,
+        backend=args.backend,
+        only_correctness=args.only_correctness,
+        only_performance=args.only_performance,
+        iters=args.iters,
+        fail_fast=args.fail_fast,
+    )
+
+    print("\n" + "=" * 60)
+    print("执行完成!")
+    print("=" * 60)
+
+    return returncode
+
+
 def main(argv: Optional[list] = None) -> int:
     parser = argparse.ArgumentParser(
         description="PyTorch Profiler 自动化工具集",
@@ -309,12 +402,56 @@ def main(argv: Optional[list] = None) -> int:
     test_parser.add_argument("--update-whitelist", action="store_true", help="动态发现后更新白名单")
     test_parser.add_argument("--update-blacklist", action="store_true", help="将未映射算子加入黑名单")
 
+    # === generate 子命令 ===
+    generate_parser = subparsers.add_parser(
+        "generate", help="从 Trace 生成测试用例文件",
+        description="解析 PyTorch Profiler Trace，生成可执行的 Python 测试文件",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+示例:
+  op_testgen generate profiler_trace.json -o tests/test_ops.py
+  op_testgen generate profiler_trace.json -o tests/test_ops.py --backend cpu --max-ops 50
+        """,
+    )
+    generate_parser.add_argument("trace_file", help="PyTorch Profiler Chrome Trace JSON 文件路径")
+    generate_parser.add_argument("-o", "--output", required=True, help="输出 .py 文件路径")
+    generate_parser.add_argument("--backend", choices=["cuda", "swdnn", "auto", "cpu"], default="cuda",
+                                help="默认后端 (默认: cuda)")
+    generate_parser.add_argument("--seed", type=int, default=42, help="随机种子 (默认: 42)")
+    generate_parser.add_argument("--max-ops", type=int, default=100, help="最大算子数 (默认: 100)")
+    generate_parser.add_argument("--op-filter", help="算子名称过滤 (支持通配符)")
+    generate_parser.add_argument("--iters", type=int, default=10, help="性能测试迭代次数 (默认: 10)")
+    generate_parser.add_argument("--update-blacklist", action="store_true", help="将未映射算子加入黑名单")
+
+    # === run 子命令 ===
+    run_parser = subparsers.add_parser(
+        "run", help="执行生成的测试用例文件",
+        description="运行由 generate 子命令生成的 Python 测试文件",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+示例:
+  op_testgen run tests/test_ops.py
+  op_testgen run tests/test_ops.py --backend cuda --only-correctness
+        """,
+    )
+    run_parser.add_argument("test_file", help="生成的 .py 测试文件路径")
+    run_parser.add_argument("--backend", choices=["cuda", "swdnn", "cpu"],
+                           help="后端 (覆盖文件默认值)")
+    run_parser.add_argument("--only-correctness", action="store_true", help="仅正确性测试")
+    run_parser.add_argument("--only-performance", action="store_true", help="仅性能测试")
+    run_parser.add_argument("--iters", type=int, help="性能测试迭代次数")
+    run_parser.add_argument("--fail-fast", action="store_true", help="第一个失败即停止")
+
     args = parser.parse_args(argv)
 
     if args.command == "analyze":
         return cmd_analyze(args)
     elif args.command == "test":
         return cmd_test(args)
+    elif args.command == "generate":
+        return cmd_generate(args)
+    elif args.command == "run":
+        return cmd_run(args)
     else:
         parser.print_help()
         return 0

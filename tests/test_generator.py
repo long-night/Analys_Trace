@@ -240,3 +240,56 @@ if __name__ == "__main__":
         finally:
             if os.path.exists(output_path):
                 os.unlink(output_path)
+
+
+class TestCLIE2E:
+    def test_generate_subcommand(self):
+        """测试 generate 子命令"""
+        import subprocess
+        import os
+        import tempfile
+
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".py", delete=False) as f:
+            output_path = f.name
+
+        try:
+            result = subprocess.run(
+                ["python", "run.py", "generate", "profiler_trace.json", "-o", output_path, "--max-ops", "5", "--backend", "cpu"],
+                capture_output=True,
+                text=True,
+            )
+            assert result.returncode == 0, f"stderr: {result.stderr}"
+            assert os.path.exists(output_path)
+            with open(output_path, "r", encoding="utf-8") as f:
+                content = f.read()
+            assert "TEST_CASES_DATA" in content
+        finally:
+            if os.path.exists(output_path):
+                os.unlink(output_path)
+
+    def test_run_subcommand(self):
+        """测试 run 子命令"""
+        import subprocess
+        import os
+        import tempfile
+
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".py", delete=False) as f:
+            output_path = f.name
+
+        try:
+            result = subprocess.run(
+                ["python", "run.py", "generate", "profiler_trace.json", "-o", output_path, "--max-ops", "5", "--backend", "cpu"],
+                capture_output=True,
+                text=True,
+            )
+            assert result.returncode == 0
+
+            result = subprocess.run(
+                ["python", "run.py", "run", output_path, "--only-correctness"],
+                capture_output=True,
+                text=True,
+            )
+            assert "测试完成" in result.stdout
+        finally:
+            if os.path.exists(output_path):
+                os.unlink(output_path)
