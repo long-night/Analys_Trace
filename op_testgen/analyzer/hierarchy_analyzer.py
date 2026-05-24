@@ -97,9 +97,9 @@ class HierarchyAnalyzer:
         for node in self.all_nodes:
             chain = node.get_call_chain()
             for i in range(len(chain)):
-                for j in range(i + 1, min(i + max_cycle_length + 1, len(chain))):
+                for j in range(i + 2, min(i + max_cycle_length + 2, len(chain) + 1)):
                     cycle = tuple(chain[i:j])
-                    if len(cycle) >= 2 and cycle[0] == cycle[-1]:
+                    if cycle[0] == cycle[-1]:
                         cycle_counts[cycle].append(node.depth)
 
         results = []
