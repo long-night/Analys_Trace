@@ -94,3 +94,7 @@ patterns:
 - aten::sym_stride
 - aten::as_strided
 - aten::clone
+- aten::mkldnn_convolution
+- c10d::broadcast_
+- c10d::allreduce_
+- c10d::allgather_

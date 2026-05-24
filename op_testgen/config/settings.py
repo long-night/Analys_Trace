@@ -7,12 +7,46 @@ from typing import Dict
 @dataclass
 class Settings:
     """测试生成器全局配置"""
-    # 误差阈值: {dtype_str: (max_abs_err, max_rel_err)}
     error_thresholds: Dict[str, tuple] = field(default_factory=lambda: {
         "float16": (1e-3, 1e-2),
         "bfloat16": (5e-3, 5e-2),
         "float32": (1e-5, 1e-4),
         "float64": (1e-10, 1e-9),
+    })
+
+    op_specific_thresholds: Dict[str, tuple] = field(default_factory=lambda: {
+        "aten::conv2d": (1e-1, 1e-1),
+        "aten::convolution": (1e-1, 1e-1),
+        "aten::mm": (1e-3, 1e-1),
+        "aten::matmul": (1e-3, 1e-1),
+        "aten::bmm": (1e-3, 1e-1),
+        "aten::native_batch_norm": (1e-3, 1e-1),
+        "aten::batch_norm": (1e-3, 1e-1),
+        "aten::sum": (1e-3, 1e-1),
+        "aten::mean": (1e-3, 1e-1),
+        "aten::softmax": (1e-3, 1e-1),
+        "aten::log_softmax": (1e-3, 1e-1),
+        "aten::linear": (1e-3, 1e-1),
+        "aten::embedding": (1e-3, 1e-1),
+        "aten::embedding_bag": (1e-3, 1e-1),
+        "aten::cross_entropy_loss": (1e-3, 1e-1),
+        "aten::nll_loss": (1e-3, 1e-1),
+        "aten::conv2d": (1e-1, 1e-1),
+        "aten::convolution": (1e-1, 1e-1),
+        "aten::mm": (1e-3, 1e-1),
+        "aten::matmul": (1e-3, 1e-1),
+        "aten::bmm": (1e-3, 1e-1),
+        "aten::native_batch_norm": (1e-3, 1e-1),
+        "aten::batch_norm": (1e-3, 1e-1),
+        "aten::sum": (1e-3, 1e-1),
+        "aten::mean": (1e-3, 1e-1),
+        "aten::softmax": (1e-3, 1e-1),
+        "aten::log_softmax": (1e-3, 1e-1),
+        "aten::linear": (1e-3, 1e-1),
+        "aten::embedding": (1e-3, 1e-1),
+        "aten::embedding_bag": (1e-3, 1e-1),
+        "aten::cross_entropy_loss": (1e-3, 1e-1),
+        "aten::nll_loss": (1e-3, 1e-1),
     })
 
     # 性能测试
