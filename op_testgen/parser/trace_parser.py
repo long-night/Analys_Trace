@@ -16,9 +16,50 @@ class OpInfo:
     concrete_inputs: List[Any] = field(default_factory=list)
     duration_us: float = 0.0
     is_communication: bool = False
+    start_ts: float = 0.0
+    tid: int = 0
 
     def __repr__(self) -> str:
         return f"OpInfo(name={self.name}, dims={self.input_dims}, types={self.input_types})"
+
+
+@dataclass
+class HierarchicalOpInfo(OpInfo):
+    """带层级关系的算子信息"""
+
+    parent: Optional['HierarchicalOpInfo'] = None
+    children: List['HierarchicalOpInfo'] = field(default_factory=list)
+    depth: int = 0
+    is_root: bool = False
+
+    @property
+    def self_duration_us(self) -> float:
+        """自耗时 = 总耗时 - 所有直接子算子耗时总和"""
+        children_total = sum(c.duration_us for c in self.children)
+        return max(0.0, self.duration_us - children_total)
+
+    @property
+    def total_duration_us_recursive(self) -> float:
+        """递归总耗时（包含所有后代节点）"""
+        return self.duration_us + sum(
+            c.total_duration_us_recursive for c in self.children
+        )
+
+    @property
+    def descendant_count(self) -> int:
+        """后代节点总数（不含自身）"""
+        return len(self.children) + sum(
+            c.descendant_count for c in self.children
+        )
+
+    def get_call_chain(self) -> List[str]:
+        """获取从根节点到自身的完整调用链"""
+        chain = []
+        current: Optional[HierarchicalOpInfo] = self
+        while current is not None:
+            chain.append(current.name)
+            current = current.parent
+        return list(reversed(chain))
 
 
 class TraceParser:
@@ -132,6 +173,8 @@ class TraceParser:
                         concrete_inputs=concrete,
                         duration_us=duration,
                         is_communication=self._is_communication(name),
+                        start_ts=start_ts,
+                        tid=tid,
                     )
                     ops.append(op)
                     del pending[tid][name]
@@ -151,7 +194,73 @@ class TraceParser:
                     concrete_inputs=concrete,
                     duration_us=duration,
                     is_communication=self._is_communication(name),
+                    start_ts=event.get("ts", 0),
+                    tid=tid,
                 )
                 ops.append(op)
 
         return ops
+
+    def _build_hierarchy(self, flat_ops: List[OpInfo]) -> List[HierarchicalOpInfo]:
+        """基于时间戳范围重叠构建调用树
+
+        前置条件：flat_ops 中每个 OpInfo 必须包含 start_ts、duration_us、tid
+
+        算法（按线程独立处理）：
+        1. 按 tid 分组，每组按 start_ts 排序
+        2. 维护调用栈（单调递增的 start_ts）
+        3. 对于每个算子 op：
+           - 当栈顶算子的结束时间 <= op.start_ts 时，弹出栈顶（栈顶已结束）
+           - 若栈非空，栈顶即为 op 的父节点
+           - 将 op 压入栈
+        4. 从未被作为子节点的节点即为根节点
+        """
+        by_tid: Dict[int, List[OpInfo]] = defaultdict(list)
+        for op in flat_ops:
+            by_tid[op.tid].append(op)
+
+        node_map: Dict[int, HierarchicalOpInfo] = {}
+        all_roots: List[HierarchicalOpInfo] = []
+
+        for tid, ops in by_tid.items():
+            ops.sort(key=lambda o: o.start_ts)
+
+            stack: List[HierarchicalOpInfo] = []
+            roots_for_tid: List[HierarchicalOpInfo] = []
+
+            for op in ops:
+                while stack and (stack[-1].start_ts + stack[-1].duration_us) <= op.start_ts:
+                    stack.pop()
+
+                h_op = HierarchicalOpInfo(
+                    name=op.name,
+                    input_dims=op.input_dims,
+                    input_strides=op.input_strides,
+                    input_types=op.input_types,
+                    concrete_inputs=op.concrete_inputs,
+                    duration_us=op.duration_us,
+                    is_communication=op.is_communication,
+                    start_ts=op.start_ts,
+                    tid=op.tid,
+                )
+                node_map[id(op)] = h_op
+
+                if stack:
+                    parent = stack[-1]
+                    h_op.parent = parent
+                    h_op.depth = parent.depth + 1
+                    parent.children.append(h_op)
+                else:
+                    h_op.is_root = True
+                    roots_for_tid.append(h_op)
+
+                stack.append(h_op)
+
+            all_roots.extend(roots_for_tid)
+
+        return all_roots
+
+    def parse_hierarchical(self) -> List[HierarchicalOpInfo]:
+        """解析 trace 并返回带层级关系的根节点列表"""
+        flat_ops = self.parse()
+        return self._build_hierarchy(flat_ops)
