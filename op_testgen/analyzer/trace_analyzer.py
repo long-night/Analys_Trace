@@ -51,8 +51,10 @@ class ShapeStats:
 class OperatorStats:
     """单个算子的聚合统计信息"""
 
-    def __init__(self, name: str):
+    def __init__(self, name: str, depth: int = 0, root_name: str = ""):
         self.name = name
+        self.depth = depth
+        self.root_name = root_name
         self.call_count = 0
         self.total_duration_us = 0.0
         self.shape_stats: Dict[str, ShapeStats] = {}
@@ -118,9 +120,10 @@ class OperatorStats:
 class TraceAnalyzer:
     """Trace 统计分析器"""
 
-    def __init__(self, op_infos: List[OpInfo]):
+    def __init__(self, op_infos: List[OpInfo], use_hierarchical: bool = False):
         self.op_infos = op_infos
         self.operators: Dict[str, OperatorStats] = {}
+        self.use_hierarchical = use_hierarchical
         self._hierarchy: Optional[List[HierarchicalOpInfo]] = None
         self._hierarchy_analyzer: Optional[HierarchyAnalyzer] = None
         self._analyze()
@@ -128,9 +131,17 @@ class TraceAnalyzer:
     def _analyze(self):
         """聚合统计"""
         for op_info in self.op_infos:
-            name = op_info.name
+            if self.use_hierarchical and isinstance(op_info, HierarchicalOpInfo):
+                name = op_info.hierarchical_name
+                depth = op_info.depth
+                root_name = op_info.get_call_chain()[0] if op_info.get_call_chain() else name
+            else:
+                name = op_info.name
+                depth = 0
+                root_name = name
+
             if name not in self.operators:
-                self.operators[name] = OperatorStats(name)
+                self.operators[name] = OperatorStats(name, depth, root_name)
             self.operators[name].add_op_info(op_info)
 
     def print_summary(self):
@@ -141,12 +152,22 @@ class TraceAnalyzer:
 
         total_time_all = sum(op.total_duration_us for op in self.operators.values())
 
+        # 根算子统计（层级模式下）
+        if self.use_hierarchical:
+            root_ops = {name: op for name, op in self.operators.items() if op.depth == 0}
+            if root_ops:
+                print("\n【根算子统计】")
+                print(f"  根算子数: {len(root_ops)}")
+                print(f"  根算子总时间: {sum(op.total_duration_us for op in root_ops.values()) / 1000.0:.2f} ms")
+                print(f"  总算子（含层级）: {len(self.operators)}")
+
         # 最耗时的算子 TOP 10
         print("\n【最耗时的算子 TOP 10】")
         top_time = sorted(self.operators.values(), key=lambda x: x.total_duration_us, reverse=True)[:10]
         for i, op in enumerate(top_time, 1):
             pct = (op.total_duration_us / total_time_all * 100) if total_time_all > 0 else 0
-            print(f"  {i:2d}. {op.name}")
+            depth_tag = f" [深度 {op.depth}]" if self.use_hierarchical else ""
+            print(f"  {i:2d}. {op.name}{depth_tag}")
             print(f"      总时间: {op.total_duration_ms:.2f} ms ({pct:.1f}%), "
                   f"调用: {op.call_count} 次, 平均: {op.avg_duration_ms:.4f} ms")
 
@@ -189,13 +210,15 @@ class TraceAnalyzer:
 
         with open(operators_file, "w", newline="", encoding="utf-8") as f:
             writer = csv.DictWriter(f, fieldnames=[
-                "算子名称", "输入Shapes", "输入Strides", "输入数据类型", "Concrete Inputs",
+                "算子名称", "深度", "根算子", "输入Shapes", "输入Strides", "输入数据类型", "Concrete Inputs",
                 "调用次数", "总执行时间(ms)", "平均执行时间(ms)"
             ])
             writer.writeheader()
             for op in sorted_ops:
                 writer.writerow({
                     "算子名称": op.name,
+                    "深度": op.depth,
+                    "根算子": op.root_name,
                     "输入Shapes": op.get_all_shapes_str(),
                     "输入Strides": op.get_all_strides_str(),
                     "输入数据类型": op.get_all_input_types_str(),
@@ -210,6 +233,8 @@ class TraceAnalyzer:
             for stats in op.shape_stats.values():
                 all_shape_stats.append({
                     "op_name": op.name,
+                    "depth": op.depth,
+                    "root_name": op.root_name,
                     "shape": str(list(stats.shape)),
                     "strides": str(list(stats.strides)) if stats.strides else "N/A",
                     "input_types": " | ".join(sorted(stats.input_types_set)) if stats.input_types_set else "N/A",
@@ -224,7 +249,7 @@ class TraceAnalyzer:
 
         with open(shapes_file, "w", newline="", encoding="utf-8") as f:
             writer = csv.DictWriter(f, fieldnames=[
-                "算子名称", "输入Shapes", "输入Strides", "输入数据类型", "Concrete Inputs",
+                "算子名称", "深度", "根算子", "输入Shapes", "输入Strides", "输入数据类型", "Concrete Inputs",
                 "调用次数", "总执行时间(ms)", "平均执行时间(ms)",
                 "最小执行时间(ms)", "最大执行时间(ms)"
             ])
@@ -232,6 +257,8 @@ class TraceAnalyzer:
             for s in all_shape_stats:
                 writer.writerow({
                     "算子名称": s["op_name"],
+                    "深度": s["depth"],
+                    "根算子": s["root_name"],
                     "输入Shapes": s["shape"],
                     "输入Strides": s["strides"],
                     "输入数据类型": s["input_types"],
@@ -264,7 +291,7 @@ class TraceAnalyzer:
 
         # Sheet 1: 算子总表
         ws1 = wb.create_sheet("算子总表")
-        headers1 = ["算子名称", "输入Shapes", "输入Strides", "输入数据类型", "Concrete Inputs",
+        headers1 = ["算子名称", "深度", "根算子", "输入Shapes", "输入Strides", "输入数据类型", "Concrete Inputs",
                     "调用次数", "总执行时间(ms)", "平均执行时间(ms)"]
         ws1.append(headers1)
         for col_num, _ in enumerate(headers1, 1):
@@ -276,14 +303,15 @@ class TraceAnalyzer:
         sorted_ops = sorted(self.operators.values(), key=lambda x: x.total_duration_us, reverse=True)
         for op in sorted_ops:
             ws1.append([
-                op.name, op.get_all_shapes_str(), op.get_all_strides_str(),
+                op.name, op.depth, op.root_name,
+                op.get_all_shapes_str(), op.get_all_strides_str(),
                 op.get_all_input_types_str(), op.get_all_concrete_inputs_str(),
                 op.call_count, round(op.total_duration_ms, 4), round(op.avg_duration_ms, 4)
             ])
 
         # Sheet 2: Shape 统计表
         ws2 = wb.create_sheet("Shape统计表")
-        headers2 = ["算子名称", "输入Shapes", "输入Strides", "输入数据类型", "Concrete Inputs",
+        headers2 = ["算子名称", "深度", "根算子", "输入Shapes", "输入Strides", "输入数据类型", "Concrete Inputs",
                     "调用次数", "总执行时间(ms)", "平均执行时间(ms)",
                     "最小执行时间(ms)", "最大执行时间(ms)"]
         ws2.append(headers2)
@@ -298,6 +326,8 @@ class TraceAnalyzer:
             for stats in op.shape_stats.values():
                 all_shape_stats.append({
                     "op_name": op.name,
+                    "depth": op.depth,
+                    "root_name": op.root_name,
                     "shape": str(list(stats.shape)),
                     "strides": str(list(stats.strides)) if stats.strides else "N/A",
                     "input_types": " | ".join(sorted(stats.input_types_set)) if stats.input_types_set else "N/A",
@@ -312,7 +342,8 @@ class TraceAnalyzer:
 
         for s in all_shape_stats:
             ws2.append([
-                s["op_name"], s["shape"], s["strides"], s["input_types"], s["concrete_inputs"],
+                s["op_name"], s["depth"], s["root_name"],
+                s["shape"], s["strides"], s["input_types"], s["concrete_inputs"],
                 s["call_count"], round(float(s["total_duration_ms"]), 4), round(float(s["avg_duration_ms"]), 4),
                 round(float(s["min_duration_ms"]), 4), round(float(s["max_duration_ms"]), 4)
             ])
