@@ -33,6 +33,11 @@ class HierarchicalOpInfo(OpInfo):
     is_root: bool = False
 
     @property
+    def hierarchical_name(self) -> str:
+        """完整层级路径，如 aten::convolution_backward/aten::contiguous"""
+        return "/".join(self.get_call_chain())
+
+    @property
     def self_duration_us(self) -> float:
         """自耗时 = 总耗时 - 所有直接子算子耗时总和"""
         children_total = sum(c.duration_us for c in self.children)
