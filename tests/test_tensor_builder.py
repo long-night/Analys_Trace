@@ -73,5 +73,4 @@ class TestTensorBuilder:
         mapped = mapper.map_operator(op)
         test_case = builder.build(mapped)
         assert len(test_case.input_tensors) == 1
-        # Scalar 值被解析到 kwargs 中
-        assert 1.5 in test_case.kwargs.values()
+        assert 1.5 in test_case.args

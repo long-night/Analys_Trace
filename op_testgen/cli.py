@@ -95,8 +95,12 @@ def cmd_test(args) -> int:
     unique_mapped_ops = []
     for m in mapped_ops:
         info = m.op_info
-        dims_tuple = tuple(tuple(d) for d in info.input_dims)
-        strides_tuple = tuple(tuple(s) if s else () for s in info.input_strides)
+        def _to_tuple(x):
+            if isinstance(x, list):
+                return tuple(_to_tuple(i) for i in x)
+            return x
+        dims_tuple = _to_tuple(info.input_dims)
+        strides_tuple = _to_tuple(info.input_strides)
         types_tuple = tuple(info.input_types)
         key = (info.name, dims_tuple, strides_tuple, types_tuple)
         if key not in seen_keys:
