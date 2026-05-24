@@ -1,32 +1,56 @@
 # PyTorch Profiler 自动化工具集
 
 基于 PyTorch Profiler Chrome Trace JSON 的自动化工具集，包含：
-- **Trace 分析器** (`analyze`) — 算子统计分析、Excel/CSV 导出（原 `analys_trace_v4.py`）
-- **测试生成器** (`test`) — 自动生成正确性/性能测试用例，对比 CPU vs CUDA/SWDNN
+- **Trace 分析器** (`op_testgen analyze`) — 算子统计分析、Excel/CSV 导出（原 `analys_trace_v4.py` 功能升级）
+- **测试生成器** (`op_testgen test`) — 自动生成正确性/性能测试用例，对比 CPU vs CUDA/SWDNN
 
 ## 功能特性
 
-- **自动解析** PyTorch Profiler 输出的 Chrome Trace JSON
-- **算子映射** 支持动态反射发现 + 可配置白名单混合策略
-- **张量重构** 根据 Input Dims / Strides / Types 自动构建输入张量
-- **正确性测试** CPU (float64) baseline vs CUDA/SWDNN，输出绝对/相对误差
-- **性能测试** 自动分类算子（计算/访存/通信密集型），计算 FLOPS / 带宽 / 加速比
-- **OOM 防护** 内置黑名单过滤、去重、max-ops 限制，确保内存安全
+| 模块 | 功能 |
+|------|------|
+| **Trace 解析** | 自动解析 PyTorch Profiler Chrome Trace JSON，支持 B/E/X 三种事件相位 |
+| **算子映射** | 动态反射发现 + 可配置白名单混合策略，支持 `torch`/`torch.nn.functional`/`torch.linalg` |
+| **张量重构** | 根据 Input Dims / Strides / Types 自动构建输入张量，支持标量参数解析 |
+| **正确性测试** | CPU (float64) baseline vs CUDA/SWDNN，输出绝对/相对误差，mask 零值 |
+| **性能测试** | 自动分类算子（计算/访存/通信密集型），计算 FLOPS / 带宽 / 加速比 |
+| **统计分析** | 算子总表、Shape 统计表、TOP 排名、通信算子专项分析 |
+| **OOM 防护** | 黑名单过滤（55+ 模式）、去重、max-ops 限制，确保内存安全 |
+| **可配置性** | YAML 配置文件支持白名单、黑名单、分类公式自定义 |
 
 ## 安装
 
+### 环境要求
+
+- Python >= 3.10
+- PyTorch
+- PyYAML, Jinja2
+
+### 安装方式
+
 ```bash
+# 克隆仓库
+git clone <repository-url>
+cd Analys_Trace
+
 # 基础安装
 pip install -e .
 
-# 带 Excel 报告支持
+# 带 Excel 报告支持（推荐）
 pip install -e ".[excel]"
 
 # 开发依赖
 pip install -e ".[dev]"
 ```
 
-依赖: Python >= 3.10, PyTorch, PyYAML, Jinja2
+### 安装验证
+
+```bash
+# 检查命令是否可用
+op_testgen --help
+
+# 运行测试套件
+pytest tests/ -v
+```
 
 ## 快速开始
 
@@ -84,16 +108,14 @@ SWDNN=ON op_testgen test profiler_trace.json --backend swdnn
 
 ### 3. 查看报告
 
-```bash
-# HTML 报告
-open op_testgen_report.html
+**分析模式输出：**
+- Excel 模式：`operator_analysis.xlsx`（两个工作表：算子总表、Shape统计表）
+- CSV 模式：`cpu_operators.csv` + `cpu_operators_shapes.csv`
 
-# JSON 报告
-cat op_testgen_report.json
-
-# Excel 报告（需安装 openpyxl）
-op_testgen profiler_trace.json --format excel -o report.xlsx
-```
+**测试模式输出：**
+- HTML 报告：`op_testgen_report.html`
+- JSON 报告：`op_testgen_report.json`
+- Excel 报告：`op_testgen_report.xlsx`（需 openpyxl）
 
 ## 命令行参数
 
@@ -284,18 +306,100 @@ pytest tests/ -v
 ### 项目结构
 
 ```
-op_testgen/
-├── analyzer/        # Trace 统计分析（原 analys_trace_v4.py）
-├── config/          # 配置系统
-├── parser/          # Trace JSON 解析
-├── mapper/          # 算子映射与过滤
-├── builder/         # 张量与参数重构
-├── correctness/     # 正确性测试
-├── perf/            # 性能测试
-├── reporter/        # 报告生成
-└── cli.py           # 命令行入口（analyze / test 子命令）
+Analys_Trace/
+├── op_testgen/              # 主包
+│   ├── __init__.py
+│   ├── cli.py               # 命令行入口（analyze / test 子命令）
+│   ├── analyzer/            # Trace 统计分析
+│   │   ├── __init__.py
+│   │   └── trace_analyzer.py
+│   ├── config/              # 配置系统
+│   │   ├── __init__.py
+│   │   ├── settings.py
+│   │   ├── op_whitelist.yaml
+│   │   ├── op_blacklist.yaml
+│   │   └── op_classification.yaml
+│   ├── parser/              # Trace JSON 解析
+│   │   ├── __init__.py
+│   │   └── trace_parser.py
+│   ├── mapper/              # 算子映射与过滤
+│   │   ├── __init__.py
+│   │   └── op_mapper.py
+│   ├── builder/             # 张量与参数重构
+│   │   ├── __init__.py
+│   │   └── tensor_builder.py
+│   ├── correctness/         # 正确性测试
+│   │   ├── __init__.py
+│   │   └── test_runner.py
+│   ├── perf/                # 性能测试
+│   │   ├── __init__.py
+│   │   ├── classifier.py
+│   │   ├── metrics.py
+│   │   └── benchmark.py
+│   └── reporter/            # 报告生成
+│       ├── __init__.py
+│       ├── base.py
+│       ├── html_reporter.py
+│       └── excel_reporter.py
+├── tests/                   # 测试套件
+│   ├── __init__.py
+│   ├── conftest.py
+│   ├── test_parser.py
+│   ├── test_mapper.py
+│   ├── test_tensor_builder.py
+│   ├── test_correctness.py
+│   ├── test_perf.py
+│   └── test_reporter.py
+├── docs/                    # 设计文档
+│   └── superpowers/
+│       ├── plans/
+│       └── specs/
+├── analys_trace_v4.py       # 原始分析脚本（已整合为 analyze 子命令）
+├── pyproject.toml           # 包配置
+└── README.md                # 本文档
 ```
+
+### 代码规范
+
+项目使用以下工具保证代码质量：
+
+```bash
+# 类型检查
+mypy op_testgen/ --ignore-missing-imports
+
+# 代码格式化
+ruff format op_testgen/ tests/
+
+# 代码检查
+ruff check op_testgen/ tests/
+```
+
+### 添加新算子支持
+
+1. 编辑 `op_testgen/config/op_whitelist.yaml`，添加算子映射
+2. 如需特殊 FLOPS 公式，编辑 `op_testgen/config/op_classification.yaml`
+3. 运行测试验证：`pytest tests/test_mapper.py -v`
+
+## 已知限制
+
+- 仅支持 Chrome Trace 格式的 PyTorch Profiler 输出
+- 动态反射映射可能无法覆盖所有 `aten::` 算子（需手动维护白名单）
+- 性能测试的 FLOPS 估算基于启发式公式，可能与实际计算量存在偏差
+- 通信算子测试需要实际的分布式环境（NCCL/Gloo/MPI）
+
+## 版本历史
+
+| 版本 | 日期 | 变更 |
+|------|------|------|
+| v0.1.0 | 2026-05 | 初始版本：Trace 解析、算子映射、正确性/性能测试、报告生成、黑名单配置 |
+
+## 贡献
+
+欢迎提交 Issue 和 PR！请确保：
+- 代码通过 `pytest tests/` 测试
+- 新增功能包含对应的测试用例
+- 遵循现有代码风格和类型注解规范
 
 ## License
 
-MIT
+MIT License
