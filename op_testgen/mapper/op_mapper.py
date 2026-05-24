@@ -3,7 +3,7 @@ import importlib
 import inspect
 import os
 from dataclasses import dataclass
-from typing import Any, Callable, Dict, List, Optional, Set
+from typing import Any, Callable, Dict, List, Optional, Sequence, Set
 
 import yaml
 
@@ -167,7 +167,7 @@ class OpMapper:
         self.unmapped_ops.add(name)
         return None
 
-    def map_all(self, op_infos: List[OpInfo]) -> List[MappedOp]:
+    def map_all(self, op_infos: Sequence[OpInfo]) -> List[MappedOp]:
         """批量映射算子列表"""
         mapped = []
         for op_info in op_infos:

@@ -37,12 +37,13 @@ def cmd_analyze(args) -> int:
 
     print(f"\n[1/3] 解析 Trace 文件...")
     parser_obj = TraceParser(args.trace_file)
-    op_infos = parser_obj.parse()
-    print(f"  发现 {len(op_infos)} 个算子事件")
+    op_infos = parser_obj.parse_hierarchical()
+    root_count = sum(1 for op in op_infos if op.is_root)
+    print(f"  发现 {len(op_infos)} 个层级节点（{root_count} 个根节点）")
 
     print(f"\n[2/3] 统计分析...")
-    analyzer = TraceAnalyzer(op_infos)
-    print(f"  共 {len(analyzer.operators)} 个不同算子")
+    analyzer = TraceAnalyzer(op_infos, use_hierarchical=True)
+    print(f"  共 {len(analyzer.operators)} 个不同层级路径")
 
     # 导出
     print(f"\n[3/3] 导出报告...")
@@ -92,17 +93,22 @@ def _prepare_test_cases(args) -> tuple:
     """提取 test 和 generate 子命令的公共逻辑
 
     Returns:
-        (unique_mapped_ops, test_cases) 或 (unique_mapped_ops, None)
+        (unique_mapped_ops, test_cases, mapper) 或 (unique_mapped_ops, None, mapper)
     """
-    # 1. 解析 Trace
-    parser_obj = TraceParser(args.trace_file)
-    op_infos = parser_obj.parse()
+    from op_testgen.parser.trace_parser import HierarchicalOpInfo
 
-    # 2. 映射算子
+    parser_obj = TraceParser(args.trace_file)
+    op_infos = parser_obj.parse_hierarchical()
+
+    if not getattr(args, "test_all_ops", False):
+        op_infos = [op for op in op_infos if op.is_root]
+        print(f"  根节点过滤: {len(op_infos)} 个根节点待测试")
+    else:
+        print(f"  全量模式: {len(op_infos)} 个算子待测试")
+
     mapper = OpMapper()
     mapped_ops = mapper.map_all(op_infos)
 
-    # 3. 去重
     seen_keys = set()
     unique_mapped_ops = []
     for m in mapped_ops:
@@ -115,29 +121,26 @@ def _prepare_test_cases(args) -> tuple:
         strides_tuple = _to_tuple(info.input_strides)
         types_tuple = tuple(info.input_types)
         concrete_tuple = _to_tuple(info.concrete_inputs)
-        key = (info.name, dims_tuple, strides_tuple, types_tuple, concrete_tuple)
+        name_key = info.hierarchical_name if isinstance(info, HierarchicalOpInfo) else info.name
+        key = (name_key, dims_tuple, strides_tuple, types_tuple, concrete_tuple)
         if key not in seen_keys:
             seen_keys.add(key)
             unique_mapped_ops.append(m)
 
-    # 4. 按算子名排序（聚类）
     unique_mapped_ops.sort(key=lambda m: m.op_info.name)
 
-    # 5. 过滤
     if hasattr(args, "op_filter") and args.op_filter:
         import fnmatch
         unique_mapped_ops = [
             m for m in unique_mapped_ops if fnmatch.fnmatch(m.op_info.name, args.op_filter)
         ]
 
-    # 6. 截断
     if hasattr(args, "max_ops") and args.max_ops > 0 and len(unique_mapped_ops) > args.max_ops:
         unique_mapped_ops = unique_mapped_ops[:args.max_ops]
 
     if not unique_mapped_ops:
-        return [], None
+        return [], None, mapper
 
-    # 6. 构建测试用例
     builder = TensorBuilder(seed=args.seed)
     test_cases = [builder.build(m) for m in unique_mapped_ops]
 
@@ -434,6 +437,8 @@ def main(argv: Optional[list] = None) -> int:
     test_parser.add_argument("--only-correctness", action="store_true", help="仅执行正确性测试")
     test_parser.add_argument("--only-performance", action="store_true", help="仅执行性能测试")
     test_parser.add_argument("--op-filter", help="仅测试匹配名称的算子 (支持通配符)")
+    test_parser.add_argument("--test-all-ops", action="store_true",
+                            help="测试所有算子（默认仅测试根节点）")
     test_parser.add_argument("--update-whitelist", action="store_true", help="动态发现后更新白名单")
     test_parser.add_argument("--update-blacklist", action="store_true", help="将未映射算子加入黑名单")
 
@@ -456,6 +461,8 @@ def main(argv: Optional[list] = None) -> int:
     generate_parser.add_argument("--max-ops", type=int, default=100, help="最大算子数 (默认: 100)")
     generate_parser.add_argument("--op-filter", help="算子名称过滤 (支持通配符)")
     generate_parser.add_argument("--iters", type=int, default=10, help="性能测试迭代次数 (默认: 10)")
+    generate_parser.add_argument("--test-all-ops", action="store_true",
+                                help="生成所有算子的测试（默认仅生成根节点）")
     generate_parser.add_argument("--update-blacklist", action="store_true", help="将未映射算子加入黑名单")
 
     # === run 子命令 ===

@@ -3,7 +3,7 @@ import csv
 import os
 import sys
 from collections import defaultdict
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Sequence
 
 from op_testgen.parser.trace_parser import OpInfo, HierarchicalOpInfo, TraceParser
 from op_testgen.analyzer.hierarchy_analyzer import HierarchyAnalyzer
@@ -120,7 +120,7 @@ class OperatorStats:
 class TraceAnalyzer:
     """Trace 统计分析器"""
 
-    def __init__(self, op_infos: List[OpInfo], use_hierarchical: bool = False):
+    def __init__(self, op_infos: Sequence[OpInfo], use_hierarchical: bool = False):
         self.op_infos = op_infos
         self.operators: Dict[str, OperatorStats] = {}
         self.use_hierarchical = use_hierarchical

@@ -2,7 +2,7 @@
 import json
 import sys
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Sequence
 from collections import defaultdict
 
 
@@ -206,7 +206,7 @@ class TraceParser:
 
         return ops
 
-    def _build_hierarchy(self, flat_ops: List[OpInfo]) -> List[HierarchicalOpInfo]:
+    def _build_hierarchy(self, flat_ops: Sequence[OpInfo]) -> List[HierarchicalOpInfo]:
         """基于时间戳范围重叠构建调用树
 
         前置条件：flat_ops 中每个 OpInfo 必须包含 start_ts、duration_us、tid
