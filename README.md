@@ -17,6 +17,7 @@
 | **性能测试** | 自动分类算子（计算/访存/通信密集型），计算 FLOPS / 带宽 / 加速比 |
 | **统计分析** | 算子总表、Shape 统计表、TOP 排名、通信算子专项分析 |
 | **层级分析** | 调用树构建、自耗时计算、调用链提取、递归检测、深度分布；**去重聚合视图**（相同父子关系合并 `[×N]`）、**递归截断标识** `[RECURSIVE]`、**树形分支符号** |
+| **父子算子** | 默认仅测试根节点（入口算子），子算子在父算子执行时递归测试；CSV/Excel 算子名称使用层级路径 `root/child1/child2` |
 | **OOM 防护** | 黑名单过滤（55+ 模式）、去重、max-ops 限制，确保内存安全 |
 | **可配置性** | YAML 配置文件支持白名单、黑名单、分类公式自定义 |
 
@@ -119,6 +120,7 @@ prof.export_chrome_trace("profiler_trace.json")
 
 ```bash
 # 分析 Trace，输出 Excel（默认，需 openpyxl）
+# 默认使用层级化视图，算子名称显示为层级路径
 op_testgen analyze profiler_trace.json
 
 # 分析并输出 CSV
@@ -176,7 +178,11 @@ op_testgen analyze profiler_trace.json --call-chains --detect-recursion
 
 ```bash
 # 完整测试（正确性 + 性能，需要 CUDA）
+# 默认仅测试根节点（入口算子），减少测试用例数量
 op_testgen test profiler_trace.json
+
+# 测试所有算子（包括子算子）
+op_testgen test profiler_trace.json --test-all-ops
 
 # 仅正确性测试，CPU baseline（无需 GPU）
 op_testgen test profiler_trace.json --only-correctness --backend cpu
@@ -198,7 +204,11 @@ SWDNN=ON op_testgen test profiler_trace.json --backend swdnn
 
 ```bash
 # 生成测试文件（可复用、可版本控制）
+# 默认仅生成根节点测试
 op_testgen generate profiler_trace.json -o tests/test_ops.py --backend cpu --max-ops 50
+
+# 生成所有算子的测试（包括子算子）
+op_testgen generate profiler_trace.json -o tests/test_ops.py --backend cpu --max-ops 50 --test-all-ops
 
 # 执行生成的测试文件
 op_testgen run tests/test_ops.py --only-correctness
@@ -250,6 +260,7 @@ op_testgen run tests/test_ops.py --backend cuda --only-performance
 | `--max-ops` | 最大测试算子数（去重后） | `100` |
 | `--op-filter` | 仅生成匹配名称的算子测试（通配符） | *(无)* |
 | `--iters` | 性能测试迭代次数（写入文件默认值） | `10` |
+| `--test-all-ops` | 生成所有算子的测试（默认仅生成根节点） | `False` |
 | `--update-blacklist` | 将未映射算子加入黑名单 | `False` |
 
 ### `run` 子命令
@@ -278,6 +289,7 @@ op_testgen run tests/test_ops.py --backend cuda --only-performance
 | `--only-correctness` | 仅执行正确性测试 | `False` |
 | `--only-performance` | 仅执行性能测试 | `False` |
 | `--op-filter` | 仅测试匹配名称的算子（通配符） | *(无)* |
+| `--test-all-ops` | 测试所有算子（默认仅测试根节点） | `False` |
 | `--update-whitelist` | 动态发现后更新白名单 | `False` |
 | `--update-blacklist` | 将未映射算子加入黑名单 | `False` |
 
@@ -492,11 +504,14 @@ Analys_Trace/
 │   ├── test_generator.py
 │   ├── test_perf.py
 │   ├── test_reporter.py
-│   ├── test_hierarchy_parser.py    # 层级构建算法测试
-│   ├── test_hierarchy_analyzer.py  # 层级分析器测试
-│   ├── test_self_time.py           # 自耗时计算测试
-│   ├── test_call_chains.py         # 调用链提取测试
-│   └── test_recursion_detect.py    # 递归检测测试
+│   ├── test_hierarchy_parser.py            # 层级构建算法测试
+│   ├── test_hierarchy_analyzer.py          # 层级分析器测试
+│   ├── test_self_time.py                   # 自耗时计算测试
+│   ├── test_call_chains.py                 # 调用链提取测试
+│   ├── test_recursion_detect.py            # 递归检测测试
+│   ├── test_hierarchical_name.py           # 层级路径属性测试
+│   ├── test_trace_analyzer_hierarchical.py # 层级化聚合与导出测试
+│   └── test_cli_root_filter.py             # CLI 根节点过滤测试
 ├── docs/                    # 设计文档
 │   └── superpowers/
 │       ├── plans/
@@ -542,6 +557,7 @@ ruff check op_testgen/ tests/
 | v0.2.0 | 2026-05 | 测试流程拆分：新增 `generate` 和 `run` 子命令，支持先生成测试文件再执行 |
 | v0.3.0 | 2026-05 | 层级调用分析：调用树构建、自耗时计算、调用链提取、递归检测、深度分布 |
 | v0.3.1 | 2026-05 | 调用树去重聚合视图：相同父子关系合并 `[×N]`、递归截断 `[RECURSIVE]`、树形分支符号、根节点分隔；高频调用链汇总 |
+| v0.4.0 | 2026-05 | 父子算子层级化：默认仅测试根节点，子算子通过父算子递归测试；CSV/Excel 算子名称使用层级路径 `root/child1/child2`，新增「深度」「根算子」列；新增 `--test-all-ops` 参数恢复全量测试 |
 
 ## 贡献
 
