@@ -16,6 +16,7 @@
 | **正确性测试** | CPU (float64) baseline vs CUDA/SWDNN，输出绝对/相对误差，mask 零值 |
 | **性能测试** | 自动分类算子（计算/访存/通信密集型），计算 FLOPS / 带宽 / 加速比 |
 | **统计分析** | 算子总表、Shape 统计表、TOP 排名、通信算子专项分析 |
+| **层级分析** | 调用树构建、自耗时计算、调用链提取、递归检测、深度分布 |
 | **OOM 防护** | 黑名单过滤（55+ 模式）、去重、max-ops 限制，确保内存安全 |
 | **可配置性** | YAML 配置文件支持白名单、黑名单、分类公式自定义 |
 
@@ -128,6 +129,15 @@ op_testgen analyze profiler_trace.json -o my_analysis
 
 # 不显示摘要
 op_testgen analyze profiler_trace.json --no-summary
+
+# 启用层级分析（调用树、自耗时、调用链、递归检测）
+op_testgen analyze profiler_trace.json --hierarchy
+
+# 导出调用树到文件
+op_testgen analyze profiler_trace.json --hierarchy --export-tree call_tree.txt
+
+# 仅输出高频调用链和递归模式
+op_testgen analyze profiler_trace.json --call-chains --detect-recursion
 ```
 
 ### 3. 测试生成与执行
@@ -191,6 +201,13 @@ op_testgen run tests/test_ops.py --backend cuda --only-performance
 | `-o, --output` | 输出文件路径 | `cpu_operators.csv` / `operator_analysis.xlsx` |
 | `--csv` | 强制输出 CSV 格式 | `False` |
 | `--no-summary` | 不显示终端摘要 | `False` |
+| `--hierarchy` | 启用层级分析（调用树、自耗时、调用链等） | `False` |
+| `--self-time-top` | 自耗时排名 TOP N | `10` |
+| `--call-chains` | 输出高频调用链分析 | `False` |
+| `--detect-recursion` | 检测递归/循环调用模式 | `False` |
+| `--export-tree` | 导出文本格式调用树到指定文件 | *(无)* |
+| `--max-chain-depth` | 调用链最大深度 | `10` |
+| `--min-chain-occurrence` | 调用链最小出现次数阈值 | `2` |
 
 ### `generate` 子命令
 
@@ -405,7 +422,8 @@ Analys_Trace/
 │   │   └── template.py
 │   ├── analyzer/            # Trace 统计分析
 │   │   ├── __init__.py
-│   │   └── trace_analyzer.py
+│   │   ├── trace_analyzer.py
+│   │   └── hierarchy_analyzer.py  # 层级调用分析器
 │   ├── config/              # 配置系统
 │   │   ├── __init__.py
 │   │   ├── settings.py
@@ -443,7 +461,12 @@ Analys_Trace/
 │   ├── test_correctness.py
 │   ├── test_generator.py
 │   ├── test_perf.py
-│   └── test_reporter.py
+│   ├── test_reporter.py
+│   ├── test_hierarchy_parser.py    # 层级构建算法测试
+│   ├── test_hierarchy_analyzer.py  # 层级分析器测试
+│   ├── test_self_time.py           # 自耗时计算测试
+│   ├── test_call_chains.py         # 调用链提取测试
+│   └── test_recursion_detect.py    # 递归检测测试
 ├── docs/                    # 设计文档
 │   └── superpowers/
 │       ├── plans/
@@ -487,6 +510,7 @@ ruff check op_testgen/ tests/
 |------|------|------|
 | v0.1.0 | 2026-05 | 初始版本：Trace 解析、算子映射、正确性/性能测试、报告生成、黑名单配置 |
 | v0.2.0 | 2026-05 | 测试流程拆分：新增 `generate` 和 `run` 子命令，支持先生成测试文件再执行 |
+| v0.3.0 | 2026-05 | 层级调用分析：调用树构建、自耗时计算、调用链提取、递归检测、深度分布 |
 
 ## 贡献
 
