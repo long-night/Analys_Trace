@@ -41,6 +41,7 @@ def main(argv: Optional[list] = None) -> int:
     parser.add_argument("--only-performance", action="store_true", help="仅执行性能测试")
     parser.add_argument("--op-filter", help="仅测试匹配名称的算子 (支持通配符)")
     parser.add_argument("--update-whitelist", action="store_true", help="动态发现后更新白名单")
+    parser.add_argument("--update-blacklist", action="store_true", help="将未映射算子加入黑名单")
     parser.add_argument("--max-ops", type=int, default=100, help="最大测试算子数（去重后，默认: 100）")
 
     args = parser.parse_args(argv)
@@ -185,6 +186,24 @@ def main(argv: Optional[list] = None) -> int:
     print("\n" + "=" * 60)
     print("测试完成!")
     print("=" * 60)
+
+    # 7. 黑名单更新提示
+    if args.update_blacklist and mapper.unmapped_ops:
+        print("\n" + "-" * 60)
+        print(f"发现 {len(mapper.unmapped_ops)} 个未映射算子:")
+        for name in sorted(mapper.unmapped_ops):
+            print(f"  - {name}")
+        print("-" * 60)
+
+        try:
+            answer = input("\n是否将这 {} 个算子加入黑名单? [y/N]: ".format(len(mapper.unmapped_ops)))
+            if answer.strip().lower() in ("y", "yes"):
+                OpMapper.update_blacklist_yaml(sorted(mapper.unmapped_ops))
+            else:
+                print("已取消，未更新黑名单")
+        except (EOFError, KeyboardInterrupt):
+            print("\n已取消，未更新黑名单")
+
     return 0
 
 

@@ -114,6 +114,33 @@ aten::conv2d:
 
 不在白名单中的算子将尝试**动态反射映射**（`aten::xxx` → `torch.xxx` / `torch.nn.functional.xxx`）。
 
+### `op_blacklist.yaml`
+
+算子黑名单，匹配的算子将被跳过不执行测试：
+
+```yaml
+patterns:
+  - "aten::empty"
+  - "aten::zeros"
+  - "aten::copy_"
+  - "aten::view"
+  # ...
+```
+
+支持两种匹配模式：
+- **精确匹配**： `"aten::add_"` — 仅匹配 `aten::add_`
+- **前缀匹配**： `"aten::_*"` — 匹配所有 `aten::_` 开头的算子
+
+**手动添加**：直接编辑 YAML 文件，在 "用户自定义添加区" 添加算子名称。
+
+**自动更新**：使用 `--update-blacklist` 参数，运行结束后会提示将未映射算子加入黑名单：
+
+```bash
+op_testgen trace.json --update-blacklist
+# 运行结束后提示：
+# 发现 15 个未映射算子，是否加入黑名单? [y/N]: y
+```
+
 ### `op_classification.yaml`
 
 算子分类与性能指标计算公式：
