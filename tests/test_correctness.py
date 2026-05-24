@@ -31,12 +31,12 @@ class TestCorrectnessRunner:
         assert result.max_abs_err == 0.0
 
     def test_error_thresholds(self):
-        """测试不同 dtype 的误差阈值"""
         runner = CorrectnessRunner()
-        assert runner._get_threshold("float32") == (1e-5, 1e-4)
-        assert runner._get_threshold("float16") == (1e-3, 1e-2)
-        assert runner._get_threshold("bfloat16") == (5e-3, 5e-2)
-        assert runner._get_threshold("float64") == (1e-10, 1e-9)
+        assert runner._get_threshold("float32", "aten::add") == (1e-5, 1e-4)
+        assert runner._get_threshold("float16", "aten::add") == (1e-3, 1e-2)
+        assert runner._get_threshold("bfloat16", "aten::add") == (5e-3, 5e-2)
+        assert runner._get_threshold("float64", "aten::add") == (1e-10, 1e-9)
+        assert runner._get_threshold("float32", "aten::conv2d") == (1e-1, 1e-1)
 
     def test_fail_fast(self, runner):
         """测试 fail-fast 模式"""

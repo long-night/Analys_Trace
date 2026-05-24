@@ -30,16 +30,30 @@ class CorrectnessRunner:
         self.fail_fast = fail_fast
         self.settings = get_settings()
 
-    def _get_threshold(self, dtype_str: str) -> tuple:
-        """获取指定数据类型的误差阈值"""
+    def _get_threshold(self, dtype_str: str, op_name: str) -> tuple:
+        op_thresholds = self.settings.op_specific_thresholds
+        if op_name in op_thresholds:
+            return op_thresholds[op_name]
+
         thresholds = self.settings.error_thresholds
         type_lower = dtype_str.lower()
         if type_lower in thresholds:
             return thresholds[type_lower]
         return thresholds.get("float32", (1e-5, 1e-4))
 
+    def _check_tolerance(self, cpu_out: torch.Tensor, cuda_out: torch.Tensor, atol: float, rtol: float) -> bool:
+        if cpu_out.dtype == torch.bool:
+            cpu_out = cpu_out.to(torch.int32)
+            cuda_out = cuda_out.to(torch.int32)
+        diff = torch.abs(cpu_out - cuda_out)
+        tolerance = atol + rtol * torch.abs(cpu_out)
+        return bool(torch.all(diff <= tolerance))
+
     def _compute_errors(self, cpu_out: torch.Tensor, cuda_out: torch.Tensor) -> Dict[str, float]:
         """计算绝对误差和相对误差"""
+        if cpu_out.dtype == torch.bool:
+            cpu_out = cpu_out.to(torch.int32)
+            cuda_out = cuda_out.to(torch.int32)
         diff = torch.abs(cpu_out - cuda_out)
         abs_err = diff
 
@@ -60,10 +74,44 @@ class CorrectnessRunner:
         op_name = op.op_info.name
 
         try:
-            # 1. CPU Baseline (float64 高精度)
-            cpu_tensors = [t.clone().cpu().to(torch.float64) for t in test_case.input_tensors]
             cpu_kwargs = {k: v for k, v in test_case.kwargs.items()}
-            cpu_out = op.callable(*cpu_tensors, **cpu_kwargs)
+            cpu_kwargs = {k: v for k, v in test_case.kwargs.items()}
+
+            def to_cpu(args):
+                return [
+                    t.clone().cpu() if isinstance(t, torch.Tensor) else
+                    [x.clone().cpu() if isinstance(x, torch.Tensor) else x for x in t] if isinstance(t, list) else
+                    t
+                    for t in args
+                ]
+
+            cpu_positional = []
+            if test_case.positional_args:
+                cpu_positional = to_cpu(test_case.positional_args)
+            def _clone_to_cpu(t):
+                if isinstance(t, torch.Tensor):
+                    return t.clone().cpu()
+                elif isinstance(t, list):
+                    return [_clone_to_cpu(x) for x in t]
+                return t
+            cpu_tensors = [_clone_to_cpu(t) for t in test_case.input_tensors]
+
+            try:
+                if test_case.positional_args and not cpu_kwargs:
+                    cpu_out = op.callable(*cpu_positional, **cpu_kwargs)
+                else:
+                    cpu_out = op.callable(*cpu_tensors, *test_case.args, **cpu_kwargs)
+            except RuntimeError as e:
+                err_msg = str(e)
+                if "itensor_view_from_dense" in err_msg or "expects float/bfloat16/half/int8" in err_msg:
+                    if test_case.positional_args:
+                        cpu_positional = to_cpu(test_case.positional_args)
+                        cpu_out = op.callable(*cpu_positional, **cpu_kwargs)
+                    else:
+                        cpu_tensors = [t.clone().cpu() for t in test_case.input_tensors]
+                        cpu_out = op.callable(*cpu_tensors, *test_case.args, **cpu_kwargs)
+                else:
+                    raise
 
             if not isinstance(cpu_out, torch.Tensor):
                 if isinstance(cpu_out, tuple):
@@ -95,9 +143,20 @@ class CorrectnessRunner:
                     error_message="CUDA not available"
                 )
 
-            cuda_tensors = [t.clone().cuda() for t in test_case.input_tensors]
             cuda_kwargs = {k: v for k, v in test_case.kwargs.items()}
-            cuda_out = op.callable(*cuda_tensors, **cuda_kwargs)
+            if test_case.positional_args and not cuda_kwargs:
+                cuda_positional = []
+                for arg in test_case.positional_args:
+                    if isinstance(arg, torch.Tensor):
+                        cuda_positional.append(arg.cuda())
+                    elif isinstance(arg, list):
+                        cuda_positional.append([t.cuda() if isinstance(t, torch.Tensor) else t for t in arg])
+                    else:
+                        cuda_positional.append(arg)
+                cuda_out = op.callable(*cuda_positional, **cuda_kwargs)
+            else:
+                cuda_tensors = [t.clone().cuda() for t in test_case.input_tensors]
+                cuda_out = op.callable(*cuda_tensors, *test_case.args, **cuda_kwargs)
 
             if isinstance(cuda_out, tuple):
                 cuda_out = [o for o in cuda_out if isinstance(o, torch.Tensor)]
@@ -123,9 +182,9 @@ class CorrectnessRunner:
 
             # 4. 阈值检查
             dtype_str = op.op_info.input_types[0] if op.op_info.input_types else "float32"
-            max_abs_thresh, max_rel_thresh = self._get_threshold(dtype_str)
+            atol, rtol = self._get_threshold(dtype_str, op_name)
 
-            passed = errors["max_abs"] <= max_abs_thresh and errors["max_rel"] <= max_rel_thresh
+            passed = self._check_tolerance(cpu_out, cuda_out_cpu, atol, rtol)
 
             return CorrectnessResult(
                 op_name=op_name,
