@@ -41,6 +41,7 @@ def main(argv: Optional[list] = None) -> int:
     parser.add_argument("--only-performance", action="store_true", help="仅执行性能测试")
     parser.add_argument("--op-filter", help="仅测试匹配名称的算子 (支持通配符)")
     parser.add_argument("--update-whitelist", action="store_true", help="动态发现后更新白名单")
+    parser.add_argument("--max-ops", type=int, default=100, help="最大测试算子数（去重后，默认: 100）")
 
     args = parser.parse_args(argv)
 
@@ -60,21 +61,44 @@ def main(argv: Optional[list] = None) -> int:
     mapped_ops = mapper.map_all(op_infos)
     print(f"  成功映射 {len(mapped_ops)} 个算子")
 
-    # 3. 构建测试用例
-    print("\n[3/6] 构建测试用例...")
-    builder = TensorBuilder(seed=args.seed)
-    test_cases = [builder.build(m) for m in mapped_ops]
-    print(f"  构建 {len(test_cases)} 个测试用例")
+    # 3. 去重 + 构建测试用例（流式处理避免OOM）
+    print("\n[3/6] 去重并构建测试用例...")
 
-    # 过滤
+    # 3a. 按 (name, dims, strides, types) 去重
+    seen_keys = set()
+    unique_mapped_ops = []
+    for m in mapped_ops:
+        info = m.op_info
+        # 将 dims 和 strides 转为不可变元组以便哈希
+        dims_tuple = tuple(tuple(d) for d in info.input_dims)
+        strides_tuple = tuple(tuple(s) if s else () for s in info.input_strides)
+        types_tuple = tuple(info.input_types)
+        key = (info.name, dims_tuple, strides_tuple, types_tuple)
+        if key not in seen_keys:
+            seen_keys.add(key)
+            unique_mapped_ops.append(m)
+
+    print(f"  去重前: {len(mapped_ops)} 个, 去重后: {len(unique_mapped_ops)} 个")
+
+    # 3b. 应用名称过滤
     if args.op_filter:
         import fnmatch
-        test_cases = [tc for tc in test_cases if fnmatch.fnmatch(tc.mapped_op.op_info.name, args.op_filter)]
-        print(f"  过滤后剩余 {len(test_cases)} 个测试用例")
+        unique_mapped_ops = [m for m in unique_mapped_ops if fnmatch.fnmatch(m.op_info.name, args.op_filter)]
+        print(f"  名称过滤后剩余: {len(unique_mapped_ops)} 个")
 
-    if not test_cases:
+    # 3c. 限制最大算子数
+    if args.max_ops > 0 and len(unique_mapped_ops) > args.max_ops:
+        print(f"  超过 --max-ops={args.max_ops}，截断至前 {args.max_ops} 个")
+        unique_mapped_ops = unique_mapped_ops[:args.max_ops]
+
+    if not unique_mapped_ops:
         print("错误：没有可测试的算子")
         return 1
+
+    # 3d. 流式构建测试用例（避免一次性全量驻留内存）
+    builder = TensorBuilder(seed=args.seed)
+    test_cases = [builder.build(m) for m in unique_mapped_ops]
+    print(f"  构建 {len(test_cases)} 个测试用例")
 
     # 确定后端列表
     backends = []
