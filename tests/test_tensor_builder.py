@@ -73,4 +73,4 @@ class TestTensorBuilder:
         mapped = mapper.map_operator(op)
         test_case = builder.build(mapped)
         assert len(test_case.input_tensors) == 1
-        assert 1.5 in test_case.args
+        assert any(arg == 1.5 for arg in test_case.positional_args if not isinstance(arg, torch.Tensor))

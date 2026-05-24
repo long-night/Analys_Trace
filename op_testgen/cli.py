@@ -102,7 +102,8 @@ def cmd_test(args) -> int:
         dims_tuple = _to_tuple(info.input_dims)
         strides_tuple = _to_tuple(info.input_strides)
         types_tuple = tuple(info.input_types)
-        key = (info.name, dims_tuple, strides_tuple, types_tuple)
+        concrete_tuple = _to_tuple(info.concrete_inputs)
+        key = (info.name, dims_tuple, strides_tuple, types_tuple, concrete_tuple)
         if key not in seen_keys:
             seen_keys.add(key)
             unique_mapped_ops.append(m)

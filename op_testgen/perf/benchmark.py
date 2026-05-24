@@ -37,10 +37,19 @@ class PerfBenchmark:
         parts = []
         for i, t in enumerate(test_case.input_tensors):
             if isinstance(t, torch.Tensor):
-                parts.append(f"T{i}={list(t.shape)}:{str(t.dtype).replace('torch.', '')}")
+                dtype_str = str(t.dtype).replace('torch.', '')
+                stride_info = f"stride={list(t.stride())}"
+                parts.append(f"T{i}={list(t.shape)}:{dtype_str}:{stride_info}")
             elif isinstance(t, list):
-                shapes = [list(x.shape) if isinstance(x, torch.Tensor) else str(x) for x in t]
-                parts.append(f"T{i}=[{shapes}]")
+                tensor_infos = []
+                for x in t:
+                    if isinstance(x, torch.Tensor):
+                        dtype_str = str(x.dtype).replace('torch.', '')
+                        stride_info = f"stride={list(x.stride())}"
+                        tensor_infos.append(f"{list(x.shape)}:{dtype_str}:{stride_info}")
+                    else:
+                        tensor_infos.append(str(x))
+                parts.append(f"T{i}=[{tensor_infos}]")
         if test_case.args:
             parts.append(f"args={test_case.args}")
         if test_case.kwargs:
@@ -49,11 +58,19 @@ class PerfBenchmark:
 
     def _measure_time(self, test_case: TestCase, device: str) -> float:
         op = test_case.mapped_op
-        tensors = [t.clone().to(device) for t in test_case.input_tensors]
+
+        def to_device(obj):
+            if isinstance(obj, torch.Tensor):
+                return obj.clone().to(device)
+            elif isinstance(obj, list):
+                return [to_device(x) for x in obj]
+            return obj
+        
+        positional = [to_device(arg) for arg in test_case.positional_args]
         kwargs = {k: v for k, v in test_case.kwargs.items()}
 
         for _ in range(self.warmup_iters):
-            op.callable(*tensors, **kwargs)
+            op.callable(*positional, **kwargs)
             if device == "cuda":
                 torch.cuda.synchronize()
 
@@ -61,7 +78,7 @@ class PerfBenchmark:
             torch.cuda.synchronize()
         start = time.perf_counter()
         for _ in range(self.benchmark_iters):
-            op.callable(*tensors, **kwargs)
+            op.callable(*positional, **kwargs)
         if device == "cuda":
             torch.cuda.synchronize()
         end = time.perf_counter()

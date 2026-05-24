@@ -51,14 +51,13 @@ class CorrectnessRunner:
         return bool(torch.all(diff <= tolerance))
 
     def _compute_errors(self, cpu_out: torch.Tensor, cuda_out: torch.Tensor) -> Dict[str, float]:
-        """计算绝对误差和相对误差"""
         if cpu_out.dtype == torch.bool:
-            cpu_out = cpu_out.to(torch.int32)
-            cuda_out = cuda_out.to(torch.int32)
+            cpu_out = cpu_out.to(torch.float64)
+            cuda_out = cuda_out.to(torch.float64)
         diff = torch.abs(cpu_out - cuda_out)
         abs_err = diff
 
-        rel_err = torch.zeros_like(diff)
+        rel_err = torch.zeros_like(diff, dtype=torch.float64)
         mask = cpu_out != 0
         rel_err[mask] = diff[mask] / torch.abs(cpu_out[mask])
 
@@ -73,10 +72,19 @@ class CorrectnessRunner:
         parts = []
         for i, t in enumerate(test_case.input_tensors):
             if isinstance(t, torch.Tensor):
-                parts.append(f"T{i}={list(t.shape)}:{str(t.dtype).replace('torch.', '')}")
+                dtype_str = str(t.dtype).replace('torch.', '')
+                stride_info = f"stride={list(t.stride())}"
+                parts.append(f"T{i}={list(t.shape)}:{dtype_str}:{stride_info}")
             elif isinstance(t, list):
-                shapes = [list(x.shape) if isinstance(x, torch.Tensor) else str(x) for x in t]
-                parts.append(f"T{i}=[{shapes}]")
+                tensor_infos = []
+                for x in t:
+                    if isinstance(x, torch.Tensor):
+                        dtype_str = str(x.dtype).replace('torch.', '')
+                        stride_info = f"stride={list(x.stride())}"
+                        tensor_infos.append(f"{list(x.shape)}:{dtype_str}:{stride_info}")
+                    else:
+                        tensor_infos.append(str(x))
+                parts.append(f"T{i}=[{tensor_infos}]")
         if test_case.args:
             parts.append(f"args={test_case.args}")
         if test_case.kwargs:
@@ -99,31 +107,18 @@ class CorrectnessRunner:
                     for t in args
                 ]
 
-            cpu_positional = []
-            if test_case.positional_args:
-                cpu_positional = to_cpu(test_case.positional_args)
-            def _clone_to_cpu(t):
-                if isinstance(t, torch.Tensor):
-                    return t.clone().cpu()
-                elif isinstance(t, list):
-                    return [_clone_to_cpu(x) for x in t]
-                return t
-            cpu_tensors = [_clone_to_cpu(t) for t in test_case.input_tensors]
+            cpu_positional = to_cpu(test_case.positional_args)
 
             try:
-                if test_case.positional_args and not cpu_kwargs:
+                if cpu_kwargs:
                     cpu_out = op.callable(*cpu_positional, **cpu_kwargs)
                 else:
-                    cpu_out = op.callable(*cpu_tensors, *test_case.args, **cpu_kwargs)
+                    cpu_out = op.callable(*cpu_positional, **cpu_kwargs)
             except RuntimeError as e:
                 err_msg = str(e)
                 if "itensor_view_from_dense" in err_msg or "expects float/bfloat16/half/int8" in err_msg:
-                    if test_case.positional_args:
-                        cpu_positional = to_cpu(test_case.positional_args)
-                        cpu_out = op.callable(*cpu_positional, **cpu_kwargs)
-                    else:
-                        cpu_tensors = [t.clone().cpu() for t in test_case.input_tensors]
-                        cpu_out = op.callable(*cpu_tensors, *test_case.args, **cpu_kwargs)
+                    cpu_positional = to_cpu(test_case.positional_args)
+                    cpu_out = op.callable(*cpu_positional, **cpu_kwargs)
                 else:
                     raise
 
@@ -161,19 +156,15 @@ class CorrectnessRunner:
                 )
 
             cuda_kwargs = {k: v for k, v in test_case.kwargs.items()}
-            if test_case.positional_args and not cuda_kwargs:
-                cuda_positional = []
-                for arg in test_case.positional_args:
-                    if isinstance(arg, torch.Tensor):
-                        cuda_positional.append(arg.cuda())
-                    elif isinstance(arg, list):
-                        cuda_positional.append([t.cuda() if isinstance(t, torch.Tensor) else t for t in arg])
-                    else:
-                        cuda_positional.append(arg)
-                cuda_out = op.callable(*cuda_positional, **cuda_kwargs)
-            else:
-                cuda_tensors = [t.clone().cuda() for t in test_case.input_tensors]
-                cuda_out = op.callable(*cuda_tensors, *test_case.args, **cuda_kwargs)
+            cuda_positional = []
+            for arg in test_case.positional_args:
+                if isinstance(arg, torch.Tensor):
+                    cuda_positional.append(arg.cuda())
+                elif isinstance(arg, list):
+                    cuda_positional.append([t.cuda() if isinstance(t, torch.Tensor) else t for t in arg])
+                else:
+                    cuda_positional.append(arg)
+            cuda_out = op.callable(*cuda_positional, **cuda_kwargs)
 
             if isinstance(cuda_out, tuple):
                 cuda_out = [o for o in cuda_out if isinstance(o, torch.Tensor)]

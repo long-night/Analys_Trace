@@ -6,6 +6,20 @@ from op_testgen.perf.benchmark import PerfResult
 from op_testgen.reporter.base import BaseReporter
 
 
+def _escape_md(text: str) -> str:
+    """转义 Markdown 表格中的特殊字符，防止破坏表格格式"""
+    if not text:
+        return ""
+    # 转义管道符（表格分隔符）和反斜杠
+    text = text.replace("\\", "\\\\").replace("|", "\\|")
+    # 转义 Markdown 格式字符：* _ ~ ` 等
+    for ch in ("*", "_", "~", "`"):
+        text = text.replace(ch, "\\" + ch)
+    # 将换行替换为空格，防止破坏单行表格
+    text = text.replace("\n", " ").replace("\r", " ")
+    return text
+
+
 class MarkdownReporter(BaseReporter):
     """Markdown 报告生成器 —— 纯文本，无需 jinja2"""
 
@@ -35,8 +49,8 @@ class MarkdownReporter(BaseReporter):
             max_rel = f"{r.max_rel_err:.2e}" if r.max_rel_err else "-"
             avg_abs = f"{r.avg_abs_err:.2e}" if r.avg_abs_err else "-"
             avg_rel = f"{r.avg_rel_err:.2e}" if r.avg_rel_err else "-"
-            input_info = r.input_info or ""
-            err_msg = r.error_message or ""
+            input_info = _escape_md(r.input_info) if r.input_info else "-"
+            err_msg = _escape_md(r.error_message) if r.error_message else "-"
             lines.append(f"| {r.op_name} | {r.backend} | {status} | {max_abs} | {max_rel} | {avg_abs} | {avg_rel} | {input_info} | {err_msg} |")
         lines.append("")
 
@@ -47,7 +61,7 @@ class MarkdownReporter(BaseReporter):
         for r in perf_results:
             flops = f"{r.flops:.2f}" if r.flops else "-"
             bw = f"{r.bandwidth_gbps:.2f}" if r.bandwidth_gbps else "-"
-            input_info = r.input_info or ""
+            input_info = _escape_md(r.input_info) if r.input_info else "-"
             lines.append(f"| {r.op_name} | {r.category} | {r.avg_time_ms:.4f} | {flops} | {bw} | {r.speedup:.2f}x | {input_info} |")
         lines.append("")
 

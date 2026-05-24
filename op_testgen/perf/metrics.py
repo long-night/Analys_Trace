@@ -22,14 +22,24 @@ class MetricsCalculator:
     @staticmethod
     def compute_bytes(input_dims: List[List[int]], dtype: torch.dtype, num_inputs: int = 1, num_outputs: int = 1) -> int:
         """计算访存字节数 (读 + 写)"""
-        element_size = torch.finfo(dtype).bits // 8 if dtype.is_floating_point else torch.iinfo(dtype).bits // 8
+        if dtype == torch.bool:
+            element_size = 1
+        elif dtype.is_floating_point:
+            element_size = torch.finfo(dtype).bits // 8
+        else:
+            element_size = torch.iinfo(dtype).bits // 8
         total_elements = sum(int(torch.prod(torch.tensor(d))) for d in input_dims)
         return total_elements * element_size * num_inputs + total_elements * element_size * num_outputs
 
     @staticmethod
     def compute_communication_bytes(input_dims: List[List[int]], dtype: torch.dtype, world_size: int = 2) -> int:
         """计算通信数据量"""
-        element_size = torch.finfo(dtype).bits // 8 if dtype.is_floating_point else torch.iinfo(dtype).bits // 8
+        if dtype == torch.bool:
+            element_size = 1
+        elif dtype.is_floating_point:
+            element_size = torch.finfo(dtype).bits // 8
+        else:
+            element_size = torch.iinfo(dtype).bits // 8
         total_elements = sum(int(torch.prod(torch.tensor(d))) for d in input_dims)
         return 2 * total_elements * element_size
 

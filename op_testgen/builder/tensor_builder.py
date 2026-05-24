@@ -1,8 +1,9 @@
 """张量与参数重构模块"""
 import ast
 import inspect
+import re
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Set
 
 import torch
 
@@ -67,6 +68,31 @@ class TensorBuilder:
     def _is_floating(self, dtype: torch.dtype) -> bool:
         return dtype in (torch.float32, torch.float64, torch.float16, torch.bfloat16)
 
+    _HARDCODED_KWARG_NAMES = {
+        "log_softmax": {"dtype"},
+    }
+
+    def _extract_kwarg_names_from_doc(self, func) -> Set[str]:
+        kwarg_names = set()
+
+        func_name = getattr(func, "__name__", "")
+        if func_name in self._HARDCODED_KWARG_NAMES:
+            return self._HARDCODED_KWARG_NAMES[func_name].copy()
+        
+        doc = getattr(func, "__doc__", None) or ""
+        if not doc:
+            return kwarg_names
+
+        lines = [line.strip() for line in doc.split("\n") if line.strip()]
+        first_line = lines[0] if lines else ""
+        match = re.search(r"\*\s*,\s*(.*?)(?:\)|->)", first_line)
+        if match:
+            kw_part = match.group(1)
+            for param_match in re.finditer(r"(\w+)\s*=", kw_part):
+                kwarg_names.add(param_match.group(1))
+
+        return kwarg_names
+
     def _build_tensor(self, dims, strides, dtype: torch.dtype, op_name: str = "") -> torch.Tensor:
         if isinstance(dims, list) and len(dims) > 0 and isinstance(dims[0], list):
             dims = dims[0]
@@ -117,6 +143,11 @@ class TensorBuilder:
                             tensor_list.append(t)
                     if tensor_list:
                         tensors[i] = tensor_list
+                elif not dims:
+                    default_dims = [2, 3]
+                    t1 = self._build_tensor(default_dims, None, torch.float32, op_name)
+                    t2 = self._build_tensor(default_dims, None, torch.float32, op_name)
+                    tensors[i] = [t1, t2]
                 continue
             if type_lower in _TENSOR_TYPES:
                 if not dims:
@@ -254,6 +285,43 @@ class TensorBuilder:
         elif base_name == "arange":
             while len(positional_args) > 3:
                 positional_args.pop()
+
+        kwarg_names = self._extract_kwarg_names_from_doc(mapped_op.callable)
+        if kwarg_names:
+            if base_name == "addmm" and len(positional_args) >= 5:
+                kwargs["beta"] = positional_args[-2]
+                kwargs["alpha"] = positional_args[-1]
+                positional_args = positional_args[:-2]
+            elif base_name == "log_softmax" and len(positional_args) >= 3:
+                last_arg = positional_args[-1]
+                if isinstance(last_arg, int) and not isinstance(last_arg, bool):
+                    positional_args = positional_args[:-1]
+                else:
+                    kwargs["dtype"] = last_arg
+                    positional_args = positional_args[:-1]
+            elif base_name == "div" and len(positional_args) >= 3:
+                kwargs["rounding_mode"] = positional_args[-1]
+                positional_args = positional_args[:-1]
+            elif base_name == "sum":
+                if len(positional_args) >= 2:
+                    last_arg = positional_args[-1]
+                    if isinstance(last_arg, int) and not isinstance(last_arg, bool):
+                        positional_args = positional_args[:-1]
+                    elif isinstance(last_arg, bool) and len(positional_args) >= 3:
+                        second_last = positional_args[-2]
+                        if isinstance(second_last, int) and not isinstance(second_last, bool):
+                            positional_args = positional_args[:-2] + positional_args[-1:]
+                    elif len(positional_args) == 2 and isinstance(last_arg, int) and not isinstance(last_arg, bool):
+                        positional_args = positional_args[:-1]
+
+        if base_name == "div" and len(positional_args) == 1:
+            positional_args.append(1.0)
+
+        if kwargs:
+            tensor_param_count = len(tensor_map)
+            positional_args = positional_args[:tensor_param_count]
+
+        args = []
 
         return TestCase(
             mapped_op=mapped_op,
