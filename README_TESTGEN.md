@@ -1,6 +1,8 @@
-# PyTorch Profiler 自动化测试生成器
+# PyTorch Profiler 自动化工具集
 
-基于 PyTorch Profiler Chrome Trace JSON 自动生成算子正确性与性能测试用例，支持 CPU baseline 与 CUDA/SWDNN 实现的对比验证。
+基于 PyTorch Profiler Chrome Trace JSON 的自动化工具集，包含：
+- **Trace 分析器** (`analyze`) — 算子统计分析、Excel/CSV 导出（原 `analys_trace_v4.py`）
+- **测试生成器** (`test`) — 自动生成正确性/性能测试用例，对比 CPU vs CUDA/SWDNN
 
 ## 功能特性
 
@@ -42,26 +44,42 @@ with profile(activities=[ProfilerActivity.CPU]) as prof:
 prof.export_chrome_trace("profiler_trace.json")
 ```
 
-### 2. 运行测试生成器
+### 2. Trace 分析
+
+```bash
+# 分析 Trace，输出 Excel（默认，需 openpyxl）
+op_testgen analyze profiler_trace.json
+
+# 分析并输出 CSV
+op_testgen analyze profiler_trace.json --csv
+
+# 自定义输出文件名
+op_testgen analyze profiler_trace.json -o my_analysis
+
+# 不显示摘要
+op_testgen analyze profiler_trace.json --no-summary
+```
+
+### 3. 测试生成
 
 ```bash
 # 完整测试（正确性 + 性能，需要 CUDA）
-op_testgen profiler_trace.json
+op_testgen test profiler_trace.json
 
 # 仅正确性测试，CPU baseline（无需 GPU）
-op_testgen profiler_trace.json --only-correctness --backend cpu
+op_testgen test profiler_trace.json --only-correctness --backend cpu
 
 # 仅测试特定算子（支持通配符）
-op_testgen profiler_trace.json --op-filter "aten::conv*"
+op_testgen test profiler_trace.json --op-filter "aten::conv*"
 
 # 增大测试覆盖范围（默认 100 个）
-op_testgen profiler_trace.json --max-ops 200
+op_testgen test profiler_trace.json --max-ops 200
 
 # 输出所有格式
-op_testgen profiler_trace.json --format all -o report
+op_testgen test profiler_trace.json --format all -o report
 
 # SWDNN 对比测试
-SWDNN=ON op_testgen profiler_trace.json --backend swdnn
+SWDNN=ON op_testgen test profiler_trace.json --backend swdnn
 ```
 
 ### 3. 查看报告
@@ -79,6 +97,17 @@ op_testgen profiler_trace.json --format excel -o report.xlsx
 
 ## 命令行参数
 
+### `analyze` 子命令
+
+| 参数 | 说明 | 默认值 |
+|------|------|--------|
+| `trace_file` | PyTorch Profiler Chrome Trace JSON 文件路径 | *(必填)* |
+| `-o, --output` | 输出文件路径 | `cpu_operators.csv` / `operator_analysis.xlsx` |
+| `--csv` | 强制输出 CSV 格式 | `False` |
+| `--no-summary` | 不显示终端摘要 | `False` |
+
+### `test` 子命令
+
 | 参数 | 说明 | 默认值 |
 |------|------|--------|
 | `trace_file` | PyTorch Profiler Chrome Trace JSON 文件路径 | *(必填)* |
@@ -93,6 +122,7 @@ op_testgen profiler_trace.json --format excel -o report.xlsx
 | `--only-performance` | 仅执行性能测试 | `False` |
 | `--op-filter` | 仅测试匹配名称的算子（通配符） | *(无)* |
 | `--update-whitelist` | 动态发现后更新白名单 | `False` |
+| `--update-blacklist` | 将未映射算子加入黑名单 | `False` |
 
 ## 配置
 
@@ -226,10 +256,10 @@ SWDNN 通过环境变量控制，与 PyTorch 原生 CUDA API 完全一致：
 
 ```bash
 # Baseline
-SWDNN=OFF op_testgen trace.json --backend cuda
+SWDNN=OFF op_testgen test trace.json --backend cuda
 
 # SWDNN 实现
-SWDNN=ON op_testgen trace.json --backend swdnn
+SWDNN=ON op_testgen test trace.json --backend swdnn
 ```
 
 ### 误差阈值
@@ -255,6 +285,7 @@ pytest tests/ -v
 
 ```
 op_testgen/
+├── analyzer/        # Trace 统计分析（原 analys_trace_v4.py）
 ├── config/          # 配置系统
 ├── parser/          # Trace JSON 解析
 ├── mapper/          # 算子映射与过滤
@@ -262,7 +293,7 @@ op_testgen/
 ├── correctness/     # 正确性测试
 ├── perf/            # 性能测试
 ├── reporter/        # 报告生成
-└── cli.py           # 命令行入口
+└── cli.py           # 命令行入口（analyze / test 子命令）
 ```
 
 ## License
