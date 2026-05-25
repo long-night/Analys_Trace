@@ -150,9 +150,12 @@ class TensorBuilder:
                     tensors[i] = [t1, t2]
                 continue
             if type_lower in _TENSOR_TYPES:
-                if not dims:
-                    continue
                 dtype = self._map_dtype(type_str)
+                if not dims:
+                    # 空维度可能是0维标量张量（scalar tensor）
+                    t = torch.tensor(0, dtype=dtype)
+                    tensors[i] = t
+                    continue
                 strides = op_info.input_strides[i] if i < len(op_info.input_strides) else None
                 t = self._build_tensor(dims, strides, dtype, op_name)
                 tensors[i] = t
@@ -209,7 +212,18 @@ class TensorBuilder:
         except ValueError:
             pass
 
-        use_index = len(concrete) == len(mapped_op.op_info.input_types)
+        non_tensor_types = [
+            i for i, t in enumerate(mapped_op.op_info.input_types)
+            if t.lower().strip() not in _TENSOR_TYPES and t.lower().strip() != "tensorlist"
+        ]
+        use_index = (
+            len(concrete) == len(mapped_op.op_info.input_types)
+            and len(concrete) > 0
+            and all(
+                concrete[i] != "" or mapped_op.op_info.input_types[i].lower().strip() in _TENSOR_TYPES
+                for i in non_tensor_types
+            )
+        )
         concrete_idx = 0
         for i, type_str in enumerate(mapped_op.op_info.input_types):
             if use_index:
@@ -251,13 +265,30 @@ class TensorBuilder:
         use_index = len(concrete) == len(mapped_op.op_info.input_types)
         concrete_idx = 0
 
+        input_dims = mapped_op.op_info.input_dims
         for i, type_str in enumerate(mapped_op.op_info.input_types):
             type_lower = type_str.lower().strip()
             if type_lower in _TENSOR_TYPES or type_lower == "tensorlist":
                 if i in tensor_map:
                     positional_args.append(tensor_map[i])
-                else:
+                elif i < len(input_dims) and input_dims[i]:
                     positional_args.append(None)
+                else:
+                    if use_index:
+                        if i < len(concrete):
+                            value = concrete[i]
+                            parsed = self._parse_value(value) if value != "" else None
+                            positional_args.append(parsed)
+                        else:
+                            positional_args.append(None)
+                    else:
+                        if concrete_idx < len(concrete):
+                            value = concrete[concrete_idx]
+                            concrete_idx += 1
+                            parsed = self._parse_value(value) if value != "" else None
+                            positional_args.append(parsed)
+                        else:
+                            positional_args.append(None)
             else:
                 if use_index:
                     if i < len(concrete):
@@ -275,10 +306,9 @@ class TensorBuilder:
                     else:
                         positional_args.append(None)
 
-        while positional_args and positional_args[-1] is None:
-            positional_args.pop()
-
         base_name = mapped_op.op_info.name.replace("aten::", "").replace("aten::_", "")
+        base_name = base_name.split(".")[0]
+
         if base_name in ("sum", "mean"):
             while len(positional_args) > 3:
                 positional_args.pop()
@@ -286,40 +316,82 @@ class TensorBuilder:
             while len(positional_args) > 3:
                 positional_args.pop()
 
-        kwarg_names = self._extract_kwarg_names_from_doc(mapped_op.callable)
-        if kwarg_names:
-            if base_name == "addmm" and len(positional_args) >= 5:
-                kwargs["beta"] = positional_args[-2]
-                kwargs["alpha"] = positional_args[-1]
-                positional_args = positional_args[:-2]
-            elif base_name == "log_softmax" and len(positional_args) >= 3:
+        if base_name == "add" and len(positional_args) >= 3 and positional_args[-1] is not None:
+            kwargs["alpha"] = positional_args[-1]
+            positional_args = positional_args[:-1]
+        elif base_name == "baddbmm" and len(positional_args) >= 5 and positional_args[-1] is not None and positional_args[-2] is not None:
+            kwargs["beta"] = positional_args[-2]
+            kwargs["alpha"] = positional_args[-1]
+            positional_args = positional_args[:-2]
+        elif base_name == "addmm" and len(positional_args) >= 5 and positional_args[-1] is not None and positional_args[-2] is not None:
+            kwargs["beta"] = positional_args[-2]
+            kwargs["alpha"] = positional_args[-1]
+            positional_args = positional_args[:-2]
+        elif base_name == "log_softmax" and len(positional_args) >= 3 and positional_args[-1] is not None:
+            last_arg = positional_args[-1]
+            if isinstance(last_arg, int) and not isinstance(last_arg, bool):
+                positional_args = positional_args[:-1]
+            else:
+                kwargs["dtype"] = last_arg
+                positional_args = positional_args[:-1]
+        elif base_name == "div" and len(positional_args) >= 3 and positional_args[-1] is not None:
+            kwargs["rounding_mode"] = positional_args[-1]
+            positional_args = positional_args[:-1]
+        elif base_name == "sum":
+            if len(positional_args) >= 2 and positional_args[-1] is not None:
                 last_arg = positional_args[-1]
                 if isinstance(last_arg, int) and not isinstance(last_arg, bool):
                     positional_args = positional_args[:-1]
-                else:
-                    kwargs["dtype"] = last_arg
+                elif isinstance(last_arg, bool) and len(positional_args) >= 3:
+                    second_last = positional_args[-2]
+                    if isinstance(second_last, int) and not isinstance(second_last, bool):
+                        positional_args = positional_args[:-2] + positional_args[-1:]
+                elif len(positional_args) == 2 and isinstance(last_arg, int) and not isinstance(last_arg, bool):
                     positional_args = positional_args[:-1]
-            elif base_name == "div" and len(positional_args) >= 3:
-                kwargs["rounding_mode"] = positional_args[-1]
-                positional_args = positional_args[:-1]
-            elif base_name == "sum":
-                if len(positional_args) >= 2:
-                    last_arg = positional_args[-1]
-                    if isinstance(last_arg, int) and not isinstance(last_arg, bool):
-                        positional_args = positional_args[:-1]
-                    elif isinstance(last_arg, bool) and len(positional_args) >= 3:
-                        second_last = positional_args[-2]
-                        if isinstance(second_last, int) and not isinstance(second_last, bool):
-                            positional_args = positional_args[:-2] + positional_args[-1:]
-                    elif len(positional_args) == 2 and isinstance(last_arg, int) and not isinstance(last_arg, bool):
-                        positional_args = positional_args[:-1]
+
+        if base_name in ("add", "mul", "sub") and len(positional_args) == 1:
+            if concrete and len(concrete) >= 2 and concrete[1] != "":
+                second = self._parse_value(concrete[1])
+                if second is not None:
+                    positional_args.append(second)
+            else:
+                positional_args.append(1.0)
+
+        positional_args = [a for a in positional_args if a is not None]
 
         if base_name == "div" and len(positional_args) == 1:
             positional_args.append(1.0)
 
-        if kwargs:
-            tensor_param_count = len(tensor_map)
-            positional_args = positional_args[:tensor_param_count]
+        if base_name == "arange":
+            positional_args = [a for a in positional_args if a is not None]
+
+        if base_name == "exp" and len(positional_args) > 1:
+            positional_args = positional_args[:1]
+
+        if base_name == "linalg_vector_norm" and len(positional_args) >= 3:
+            dim_arg = positional_args[2]
+            if isinstance(dim_arg, bool):
+                positional_args = positional_args[:2]
+            elif isinstance(dim_arg, int):
+                positional_args[2] = (dim_arg,)
+
+        if base_name.endswith("_") and base_name not in ("_", ""):
+            return TestCase(
+                mapped_op=mapped_op,
+                input_tensors=list(tensor_map.values()),
+                args=[],
+                kwargs={},
+                positional_args=[],
+            )
+
+        if not positional_args and not tensor_map:
+            return TestCase(
+                mapped_op=mapped_op,
+                input_tensors=list(tensor_map.values()),
+                args=[],
+                kwargs={},
+                positional_args=[],
+            )
 
         args = []
 

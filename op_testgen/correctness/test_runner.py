@@ -119,8 +119,14 @@ class CorrectnessRunner:
             except RuntimeError as e:
                 err_msg = str(e)
                 if "itensor_view_from_dense" in err_msg or "expects float/bfloat16/half/int8" in err_msg:
-                    cpu_positional = to_cpu(test_case.positional_args)
-                    cpu_out = op.callable(*cpu_positional, **cpu_kwargs)
+                    try:
+                        cpu_out = op.callable(*cpu_positional, **cpu_kwargs)
+                    except RuntimeError:
+                        return CorrectnessResult(
+                            op_name=op_name, passed=False, backend=backend,
+                            error_message=f"CPU baseline failed after retry: {err_msg}",
+                            input_info=input_info,
+                        )
                 else:
                     raise
 

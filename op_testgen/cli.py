@@ -126,16 +126,27 @@ def _prepare_test_cases(args) -> tuple:
             seen_keys.add(key)
             unique_mapped_ops.append(m)
 
-    unique_mapped_ops.sort(key=lambda m: m.op_info.name)
-
     if hasattr(args, "op_filter") and args.op_filter:
         import fnmatch
         unique_mapped_ops = [
             m for m in unique_mapped_ops if fnmatch.fnmatch(m.op_info.name, args.op_filter)
         ]
 
-    if hasattr(args, "max_ops") and args.max_ops > 0 and len(unique_mapped_ops) > args.max_ops:
-        unique_mapped_ops = unique_mapped_ops[:args.max_ops]
+    if hasattr(args, "max_ops") and args.max_ops > 0:
+        from collections import defaultdict
+        op_total_duration: dict[str, float] = defaultdict(float)
+        for m in unique_mapped_ops:
+            op_total_duration[m.op_info.name] += m.op_info.duration_us
+
+        sorted_op_names = sorted(
+            op_total_duration.keys(),
+            key=lambda name: op_total_duration[name],
+            reverse=True
+        )
+        selected_ops = set(sorted_op_names[:args.max_ops])
+        unique_mapped_ops = [m for m in unique_mapped_ops if m.op_info.name in selected_ops]
+
+    unique_mapped_ops.sort(key=lambda m: (m.op_info.name, -m.op_info.duration_us))
 
     if not unique_mapped_ops:
         return [], None, mapper

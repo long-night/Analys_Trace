@@ -31,22 +31,6 @@ class Settings:
         "aten::embedding_bag": (1e-3, 1e-1),
         "aten::cross_entropy_loss": (1e-3, 1e-1),
         "aten::nll_loss": (1e-3, 1e-1),
-        "aten::conv2d": (1e-1, 1e-1),
-        "aten::convolution": (1e-1, 1e-1),
-        "aten::mm": (1e-3, 1e-1),
-        "aten::matmul": (1e-3, 1e-1),
-        "aten::bmm": (1e-3, 1e-1),
-        "aten::native_batch_norm": (1e-3, 1e-1),
-        "aten::batch_norm": (1e-3, 1e-1),
-        "aten::sum": (1e-3, 1e-1),
-        "aten::mean": (1e-3, 1e-1),
-        "aten::softmax": (1e-3, 1e-1),
-        "aten::log_softmax": (1e-3, 1e-1),
-        "aten::linear": (1e-3, 1e-1),
-        "aten::embedding": (1e-3, 1e-1),
-        "aten::embedding_bag": (1e-3, 1e-1),
-        "aten::cross_entropy_loss": (1e-3, 1e-1),
-        "aten::nll_loss": (1e-3, 1e-1),
     })
 
     # 性能测试
