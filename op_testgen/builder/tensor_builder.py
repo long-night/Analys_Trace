@@ -162,7 +162,7 @@ class TensorBuilder:
                 tensors[i] = t
         return tensors
 
-    def _parse_value(self, value: Any) -> Any:
+    def _parse_value(self, value: Any, target_dtype: Optional[torch.dtype] = None) -> Any:
         if isinstance(value, str):
             v = value.strip()
             if v.lower() == "true":
@@ -178,9 +178,22 @@ class TensorBuilder:
                 except (ValueError, SyntaxError):
                     pass
             try:
-                if "." in v:
-                    return float(v)
-                return int(v)
+                v = v.replace("\u2212", "-")
+                is_scientific = (
+                    ("e" in v.lower())
+                    and v.lower() not in ("true", "false")
+                    and any(ch.isdigit() for ch in v)
+                )
+                if "." in v or is_scientific:
+                    parsed = float(v)
+                else:
+                    parsed = int(v)
+                if target_dtype is not None and isinstance(parsed, float):
+                    if target_dtype in (torch.float32, torch.float64, torch.float16, torch.bfloat16):
+                        parsed = float(parsed)
+                    elif target_dtype in (torch.int32, torch.int64, torch.int16, torch.int8, torch.uint8):
+                        parsed = int(parsed)
+                return parsed
             except ValueError:
                 pass
         elif isinstance(value, list):
