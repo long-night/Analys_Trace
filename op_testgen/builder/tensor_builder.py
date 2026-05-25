@@ -26,7 +26,7 @@ _TENSOR_TYPES = {
     "half", "float16", "bfloat16", "c10::bfloat16",
     "long", "long int", "int64",
     "int", "int32", "short", "int16",
-    "char", "int8", "byte", "uint8", "bool",
+    "char", "int8", "byte", "uint8", "unsigned char", "bool",
 }
 
 
@@ -52,6 +52,7 @@ class TensorBuilder:
         "int8": torch.int8,
         "byte": torch.uint8,
         "uint8": torch.uint8,
+        "unsigned char": torch.uint8,
         "bool": torch.bool,
     }
 
@@ -140,6 +141,9 @@ class TensorBuilder:
                     for sub_dims in dims:
                         if sub_dims:
                             t = self._build_tensor(sub_dims, None, torch.float32, op_name)
+                            tensor_list.append(t)
+                        else:
+                            t = self._build_tensor([2, 3], None, torch.float32, op_name)
                             tensor_list.append(t)
                     if tensor_list:
                         tensors[i] = tensor_list
@@ -251,6 +255,12 @@ class TensorBuilder:
         elif base_name == "arange":
             while len(positional_args) > 3:
                 positional_args.pop()
+            if len(positional_args) >= 2:
+                start, end = positional_args[0], positional_args[1]
+                step = positional_args[2] if len(positional_args) > 2 else 1
+                if isinstance(start, (int, float)) and isinstance(end, (int, float)):
+                    if start > end and (step is None or (isinstance(step, (int, float)) and step > 0)):
+                        positional_args[0], positional_args[1] = end, start
         elif base_name == "batch_norm":
             while len(positional_args) > 8:
                 positional_args.pop()
@@ -287,6 +297,9 @@ class TensorBuilder:
                         positional_args = positional_args[:-2] + positional_args[-1:]
                 elif len(positional_args) == 2 and isinstance(last_arg, int) and not isinstance(last_arg, bool):
                     positional_args = positional_args[:-1]
+        elif base_name in ("sub", "sub_") and len(positional_args) >= 3 and positional_args[-1] is not None:
+            kwargs["alpha"] = positional_args[-1]
+            positional_args = positional_args[:-1]
 
         if base_name in ("add", "mul", "sub") and len(positional_args) == 1:
             if concrete and len(concrete) >= 2 and concrete[1] != "":
@@ -298,6 +311,26 @@ class TensorBuilder:
 
         while positional_args and positional_args[-1] is None:
             positional_args.pop()
+
+        if base_name == "index_put_" and len(positional_args) >= 3 and positional_args[1] is None:
+            input_tensor = positional_args[0]
+            values_tensor = positional_args[2]
+            if isinstance(input_tensor, torch.Tensor) and isinstance(values_tensor, torch.Tensor):
+                indices = []
+                for i in range(input_tensor.dim()):
+                    shape = [1] * input_tensor.dim()
+                    shape[i] = input_tensor.shape[i]
+                    idx = torch.arange(input_tensor.shape[i]).view(shape)
+                    indices.append(idx)
+                positional_args[1] = tuple(indices)
+                if values_tensor.dim() < input_tensor.dim() or values_tensor.shape != input_tensor.shape:
+                    try:
+                        positional_args[2] = values_tensor.expand_as(input_tensor)
+                    except RuntimeError:
+                        expanded = values_tensor
+                        for _ in range(input_tensor.dim() - values_tensor.dim()):
+                            expanded = expanded.unsqueeze(-1)
+                        positional_args[2] = expanded.expand_as(input_tensor)
 
         if base_name == "div" and len(positional_args) == 1:
             positional_args.append(1.0)
