@@ -183,13 +183,13 @@ class ChromeTraceAnalyzer:
         
         # 原有的 CPU 算子匹配逻辑
         return (name.startswith('aten::') or name.startswith('torch::')) and \
-               ('cpu' in cat.lower() or cat == 'cpu_op' or 'kernel' not in cat.lower())
+               ('cpu' in cat.lower() or cat == 'cpu_op')
     
     def extract_shapes(self, event: dict) -> list:
         """提取算子的 input shapes"""
         args = event.get('args', {})
 
-        for key in ['Input Dims', 'input_dims', 'Input type', 'input_type', 'Input Shapes']:
+        for key in ['Input Dims', 'input_dims', 'Input Shapes']:
             if key in args:
                 dims = args[key]
                 if isinstance(dims, list):
@@ -240,47 +240,61 @@ class ChromeTraceAnalyzer:
         
         print("正在分析算子性能数据...")
         
-        # 记录每个线程的 pending 事件
-        pending_events = defaultdict(dict)  # tid -> {op_name: (ts, shapes)}
-        
+        # 记录每个线程的 pending 事件（使用栈结构处理嵌套调用）
+        pending_events = defaultdict(list)  # tid -> [(name, ts, shapes, ...), ...]
+
         for event in events:
             if not self.is_cpu_operator(event):
                 continue
-            
+
             name = event.get('name', '')
             tid = event.get('tid', 0)
             ph = event.get('ph', '')
             ts = event.get('ts', 0)
-            
+
             # 确保算子记录存在
             if name not in self.operators:
                 self.operators[name] = OperatorInfo(name)
-            
+
             # 处理 Begin 事件
             if ph == 'B':
                 shapes = self.extract_shapes(event)
                 strides = self.extract_strides(event)
                 input_types = self.extract_input_types(event)
                 concrete_inputs = self.extract_concrete_inputs(event)
-                pending_events[tid][name] = (ts, shapes, strides, input_types, concrete_inputs)
+                pending_events[tid].append((name, ts, shapes, strides, input_types, concrete_inputs))
 
             # 处理 End 事件
             elif ph == 'E':
-                if name in pending_events[tid]:
-                    start_ts, shapes, strides, input_types, concrete_inputs = pending_events[tid][name]
-                    duration = ts - start_ts
+                matched = False
+                for i in range(len(pending_events[tid]) - 1, -1, -1):
+                    if pending_events[tid][i][0] == name:
+                        _, start_ts, shapes, strides, input_types, concrete_inputs = pending_events[tid].pop(i)
+                        duration = ts - start_ts
 
-                    if shapes:
-                        self.operators[name].add_shape(shapes, strides, duration, input_types, concrete_inputs)
+                        if duration < 0:
+                            print(f"  警告: 算子 {name} 的 duration 为负数 ({duration}μs)，已跳过")
+                            matched = True
+                            break
 
-                    self.operators[name].call_count += 1
-                    self.operators[name].total_duration += duration
+                        if shapes:
+                            self.operators[name].add_shape(shapes, strides, duration, input_types, concrete_inputs)
 
-                    del pending_events[tid][name]
+                        self.operators[name].call_count += 1
+                        self.operators[name].total_duration += duration
+                        matched = True
+                        break
+
+                if not matched:
+                    print(f"  警告: 发现未匹配的 E 事件: {name} (tid={tid}, ts={ts})")
 
             # 处理完整事件 (ph == 'X')
             elif ph == 'X':
                 duration = event.get('dur', 0.0)
+                if duration < 0:
+                    print(f"  警告: 算子 {name} 的 duration 为负数 ({duration}μs)，已跳过")
+                    continue
+
                 shapes = self.extract_shapes(event)
                 strides = self.extract_strides(event)
                 input_types = self.extract_input_types(event)
@@ -554,9 +568,9 @@ class ChromeTraceAnalyzer:
         for i, op in enumerate(top_diversity, 1):
             print(f"  {i}. {op.name}: {len(op.shape_stats)} 种不同的 shape")
         
-        # 通信算子统计
+        # 通信算子统计（复用 is_communication_operator 保持一致性）
         comm_ops = {name: op for name, op in self.operators.items() 
-                    if any(name.startswith(prefix) for prefix in ('c10d::', 'nccl:', 'gloo:', 'mpi:'))}
+                    if self.is_communication_operator({'name': name})}
         if comm_ops:
             print("\n【通信算子统计】")
             comm_time = sum(op.total_duration for op in comm_ops.values())
