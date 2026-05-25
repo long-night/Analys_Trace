@@ -98,7 +98,7 @@ class TraceParser:
 
         return (
             name.startswith(("aten::", "torch::"))
-            and ("cpu" in cat.lower() or cat == "cpu_op" or "kernel" not in cat.lower())
+            and ("cpu" in cat.lower() or cat == "cpu_op")
         )
 
     def _extract_field(self, event: dict, keys: List[str]) -> Optional[Any]:
@@ -145,8 +145,8 @@ class TraceParser:
         data = self.load_trace()
         events = data.get("traceEvents", [])
 
-        # 记录每个线程的 pending B 事件
-        pending: Dict[int, Dict[str, tuple]] = defaultdict(dict)
+        # 记录每个线程的 pending B 事件（使用栈结构处理嵌套调用）
+        pending: Dict[int, List[tuple]] = defaultdict(list)
         ops: List[OpInfo] = []
 
         for event in events:
@@ -163,29 +163,44 @@ class TraceParser:
                 strides = self._extract_strides(event)
                 types = self._extract_types(event)
                 concrete = self._extract_concrete(event)
-                pending[tid][name] = (ts, shapes, strides, types, concrete)
+                pending[tid].append((name, ts, shapes, strides, types, concrete))
 
             elif ph == "E":
-                if name in pending[tid]:
-                    start_ts, shapes, strides, types, concrete = pending[tid][name]
-                    duration = ts - start_ts
+                matched = False
+                for i in range(len(pending[tid]) - 1, -1, -1):
+                    if pending[tid][i][0] == name:
+                        _, start_ts, shapes, strides, types, concrete = pending[tid].pop(i)
+                        duration = ts - start_ts
 
-                    op = OpInfo(
-                        name=name,
-                        input_dims=shapes,
-                        input_strides=strides,
-                        input_types=types,
-                        concrete_inputs=concrete,
-                        duration_us=duration,
-                        is_communication=self._is_communication(name),
-                        start_ts=start_ts,
-                        tid=tid,
-                    )
-                    ops.append(op)
-                    del pending[tid][name]
+                        if duration < 0:
+                            print(f"  警告: 算子 {name} 的 duration 为负数 ({duration}μs)，已跳过")
+                            matched = True
+                            break
+
+                        op = OpInfo(
+                            name=name,
+                            input_dims=shapes,
+                            input_strides=strides,
+                            input_types=types,
+                            concrete_inputs=concrete,
+                            duration_us=duration,
+                            is_communication=self._is_communication(name),
+                            start_ts=start_ts,
+                            tid=tid,
+                        )
+                        ops.append(op)
+                        matched = True
+                        break
+
+                if not matched:
+                    print(f"  警告: 发现未匹配的 E 事件: {name} (tid={tid}, ts={ts})")
 
             elif ph == "X":
                 duration = event.get("dur", 0.0)
+                if duration < 0:
+                    print(f"  警告: 算子 {name} 的 duration 为负数 ({duration}μs)，已跳过")
+                    continue
+
                 shapes = self._extract_shapes(event)
                 strides = self._extract_strides(event)
                 types = self._extract_types(event)
@@ -206,7 +221,8 @@ class TraceParser:
 
         return ops
 
-    def _build_hierarchy(self, flat_ops: Sequence[OpInfo]) -> List[HierarchicalOpInfo]:
+    @staticmethod
+    def build_hierarchy(flat_ops: Sequence[OpInfo]) -> List[HierarchicalOpInfo]:
         """基于时间戳范围重叠构建调用树
 
         前置条件：flat_ops 中每个 OpInfo 必须包含 start_ts、duration_us、tid
@@ -268,7 +284,7 @@ class TraceParser:
     def parse_hierarchical(self) -> List[HierarchicalOpInfo]:
         """解析 trace 并返回带层级关系的所有节点列表（扁平化）"""
         flat_ops = self.parse()
-        roots = self._build_hierarchy(flat_ops)
+        roots = self.build_hierarchy(flat_ops)
 
         all_nodes: List[HierarchicalOpInfo] = []
 

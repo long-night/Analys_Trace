@@ -184,8 +184,9 @@ class TraceAnalyzer:
             print(f"  {i}. {op.name}: {len(op.shape_stats)} 种不同的 shape")
 
         # 通信算子统计
+        from op_testgen.parser.trace_parser import TraceParser
         comm_ops = {n: o for n, o in self.operators.items()
-                    if any(n.startswith(p) for p in ("c10d::", "nccl:", "gloo:", "mpi:"))}
+                    if n.startswith(TraceParser.COMMUNICATION_PREFIXES)}
         if comm_ops:
             print("\n【通信算子统计】")
             comm_time = sum(o.total_duration_us for o in comm_ops.values())
@@ -366,8 +367,7 @@ class TraceAnalyzer:
 
     def _ensure_hierarchy(self):
         if self._hierarchy is None:
-            parser = TraceParser("")
-            self._hierarchy = parser._build_hierarchy(self.op_infos)
+            self._hierarchy = TraceParser.build_hierarchy(self.op_infos)
             self._hierarchy_analyzer = HierarchyAnalyzer(self._hierarchy)
 
     def print_hierarchical_summary(self):
