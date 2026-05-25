@@ -35,6 +35,8 @@ class TestCaseGenerator:
             backend=options.get("backend", "cuda"),
             seed=options.get("seed", 42),
             iters=options.get("iters", 10),
+            format=options.get("format", "markdown"),
+            output=options.get("output", "op_testgen_report.md"),
             test_cases_data_repr=repr(data),
         )
 
@@ -46,8 +48,12 @@ class TestCaseGenerator:
         backend: str = "cuda",
         seed: int = 42,
         iters: int = 10,
+        format: str = "markdown",
+        output: str = "op_testgen_report.md",
     ) -> str:
         """生成测试文件
+
+        生成的文件为独立的 .py 文件，仅依赖 op_testgen 核心测试执行模块。
 
         Args:
             mapped_ops: 映射后的算子列表
@@ -56,6 +62,8 @@ class TestCaseGenerator:
             backend: 默认后端
             seed: 随机种子
             iters: 性能测试迭代次数
+            format: 报告格式
+            output: 报告输出路径
 
         Returns:
             生成的文件路径
@@ -66,6 +74,8 @@ class TestCaseGenerator:
             "backend": backend,
             "seed": seed,
             "iters": iters,
+            "format": format,
+            "output": output,
         }
         content = self._render_template(data, options)
 

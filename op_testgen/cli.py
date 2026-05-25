@@ -11,14 +11,13 @@ from op_testgen.analyzer.trace_analyzer import TraceAnalyzer
 from op_testgen.builder.tensor_builder import TensorBuilder
 from op_testgen.config import get_settings
 from op_testgen.correctness.test_runner import CorrectnessRunner
-from op_testgen.mapper.op_mapper import OpMapper
+from op_testgen.mapper.op_mapper import MappedOp, OpMapper
 from op_testgen.parser.trace_parser import TraceParser
 from op_testgen.perf.benchmark import PerfBenchmark
 from op_testgen.reporter.markdown_reporter import MarkdownReporter
 from op_testgen.reporter.html_reporter import HTMLReporter
 from op_testgen.reporter.excel_reporter import ExcelReporter
 from op_testgen.generator.test_case_generator import TestCaseGenerator
-from op_testgen.generator.test_case_runner import TestCaseRunner
 
 
 def _check_openpyxl() -> bool:
@@ -316,6 +315,8 @@ def cmd_generate(args) -> int:
         backend=args.backend,
         seed=args.seed,
         iters=args.iters,
+        format=getattr(args, "format", "markdown"),
+        output=getattr(args, "report_output", "op_testgen_report.md"),
     )
     print(f"  测试文件: {output_path}")
 
@@ -344,7 +345,9 @@ def cmd_generate(args) -> int:
 
 
 def cmd_run(args) -> int:
-    """run 子命令：执行生成的测试文件"""
+    """run 子命令：在当前进程内执行生成的 .py 测试文件"""
+    import importlib.util
+
     print("=" * 60)
     print("执行生成的测试文件")
     print("=" * 60)
@@ -353,21 +356,46 @@ def cmd_run(args) -> int:
         print(f"错误：文件不存在: {args.test_file}")
         return 1
 
-    runner = TestCaseRunner()
-    returncode = runner.run(
-        file_path=args.test_file,
-        backend=args.backend,
-        only_correctness=args.only_correctness,
-        only_performance=args.only_performance,
-        iters=args.iters,
-        fail_fast=args.fail_fast,
-    )
+    # 构建参数列表，传递给生成的 .py 文件的 main()
+    test_argv = []
+    if args.backend is not None:
+        test_argv.extend(["--backend", args.backend])
+    if args.only_correctness:
+        test_argv.append("--only-correctness")
+    if args.only_performance:
+        test_argv.append("--only-performance")
+    if args.iters is not None:
+        test_argv.extend(["--iters", str(args.iters)])
+    if args.fail_fast:
+        test_argv.append("--fail-fast")
+    if args.op_filter is not None:
+        test_argv.extend(["--op-filter", args.op_filter])
+    if args.format is not None:
+        test_argv.extend(["--format", args.format])
+    if args.output is not None:
+        test_argv.extend(["-o", args.output])
 
-    print("\n" + "=" * 60)
-    print("执行完成!")
-    print("=" * 60)
+    print(f"\n加载并执行: {args.test_file}")
+    try:
+        spec = importlib.util.spec_from_file_location("generated_test", args.test_file)
+        if spec is None or spec.loader is None:
+            print(f"错误: 无法加载文件: {args.test_file}")
+            return 1
+        module = importlib.util.module_from_spec(spec)
+        sys.modules["generated_test"] = module
+        spec.loader.exec_module(module)
 
-    return returncode
+        if not hasattr(module, "main"):
+            print("错误: 测试文件没有 main() 函数")
+            return 1
+
+        returncode = module.main(test_argv)
+        return returncode if isinstance(returncode, int) else 0
+    except Exception as e:
+        print(f"错误: 执行测试文件失败: {e}")
+        import traceback
+        traceback.print_exc()
+        return 1
 
 
 def main(argv: Optional[list] = None) -> int:
@@ -464,6 +492,10 @@ def main(argv: Optional[list] = None) -> int:
     generate_parser.add_argument("--test-all-ops", action="store_true",
                                 help="生成所有算子的测试（默认仅生成根节点）")
     generate_parser.add_argument("--update-blacklist", action="store_true", help="将未映射算子加入黑名单")
+    generate_parser.add_argument("--format", choices=["markdown", "html", "json", "excel", "all"], default="markdown",
+                                help="报告格式 (默认: markdown)")
+    generate_parser.add_argument("--report-output", default="op_testgen_report.md",
+                                help="报告输出路径 (默认: op_testgen_report.md)")
 
     # === run 子命令 ===
     run_parser = subparsers.add_parser(
@@ -483,6 +515,11 @@ def main(argv: Optional[list] = None) -> int:
     run_parser.add_argument("--only-performance", action="store_true", help="仅性能测试")
     run_parser.add_argument("--iters", type=int, help="性能测试迭代次数")
     run_parser.add_argument("--fail-fast", action="store_true", help="第一个失败即停止")
+    run_parser.add_argument("--op-filter", help="仅测试匹配名称的算子 (支持通配符)")
+    run_parser.add_argument("--format", choices=["markdown", "html", "json", "excel", "all"],
+                           help="报告格式 (覆盖文件默认值)")
+    run_parser.add_argument("-o", "--output", default="op_testgen_report.md",
+                           help="报告输出路径 (默认: op_testgen_report.md)")
 
     args = parser.parse_args(argv)
 

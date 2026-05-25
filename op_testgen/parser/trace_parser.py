@@ -266,6 +266,18 @@ class TraceParser:
         return all_roots
 
     def parse_hierarchical(self) -> List[HierarchicalOpInfo]:
-        """解析 trace 并返回带层级关系的根节点列表"""
+        """解析 trace 并返回带层级关系的所有节点列表（扁平化）"""
         flat_ops = self.parse()
-        return self._build_hierarchy(flat_ops)
+        roots = self._build_hierarchy(flat_ops)
+
+        all_nodes: List[HierarchicalOpInfo] = []
+
+        def collect(node: HierarchicalOpInfo) -> None:
+            all_nodes.append(node)
+            for child in node.children:
+                collect(child)
+
+        for root in roots:
+            collect(root)
+
+        return all_nodes
