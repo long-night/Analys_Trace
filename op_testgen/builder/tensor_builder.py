@@ -152,8 +152,9 @@ class TensorBuilder:
             if type_lower in _TENSOR_TYPES:
                 dtype = self._map_dtype(type_str)
                 if not dims:
-                    # 空维度可能是0维标量张量（scalar tensor）
-                    t = torch.tensor(0, dtype=dtype)
+                    if i < len(op_info.concrete_inputs) and op_info.concrete_inputs[i] != "":
+                        continue
+                    t = torch.tensor(1, dtype=dtype)
                     tensors[i] = t
                     continue
                 strides = op_info.input_strides[i] if i < len(op_info.input_strides) else None
@@ -186,81 +187,11 @@ class TensorBuilder:
             return tuple(value)
         return value
 
-    def _build_args_and_kwargs(
-        self, mapped_op: MappedOp
-    ) -> tuple[List[Any], Dict[str, Any]]:
-        """解析 concrete_inputs 为 args 和 kwargs。
-
-        对可获取签名的函数使用 kwargs；对 built-in 函数（无签名）使用 args。
-        """
-        args: List[Any] = []
-        kwargs: Dict[str, Any] = {}
-        concrete = mapped_op.op_info.concrete_inputs
-        if not concrete:
-            return args, kwargs
-
-        params = []
-        has_signature = False
-        try:
-            sig = inspect.signature(mapped_op.callable)
-            params = list(sig.parameters.values())
-            if params and not all(
-                p.kind in (inspect.Parameter.VAR_POSITIONAL, inspect.Parameter.VAR_KEYWORD)
-                for p in params
-            ):
-                has_signature = True
-        except ValueError:
-            pass
-
-        non_tensor_types = [
-            i for i, t in enumerate(mapped_op.op_info.input_types)
-            if t.lower().strip() not in _TENSOR_TYPES and t.lower().strip() != "tensorlist"
-        ]
-        use_index = (
-            len(concrete) == len(mapped_op.op_info.input_types)
-            and len(concrete) > 0
-            and all(
-                concrete[i] != "" or mapped_op.op_info.input_types[i].lower().strip() in _TENSOR_TYPES
-                for i in non_tensor_types
-            )
-        )
-        concrete_idx = 0
-        for i, type_str in enumerate(mapped_op.op_info.input_types):
-            if use_index:
-                if i >= len(concrete):
-                    break
-                value = concrete[i]
-            else:
-                if concrete_idx >= len(concrete):
-                    break
-                if type_str.lower().strip() in _TENSOR_TYPES:
-                    continue
-                value = concrete[concrete_idx]
-                concrete_idx += 1
-
-            if type_str.lower().strip() in _TENSOR_TYPES:
-                continue
-
-            parsed_value = self._parse_value(value) if value != "" else None
-
-            if has_signature and i < len(params):
-                param = params[i]
-                if param.kind not in (
-                    inspect.Parameter.VAR_POSITIONAL,
-                    inspect.Parameter.VAR_KEYWORD,
-                ):
-                    if parsed_value is not None:
-                        kwargs[param.name] = parsed_value
-            elif not has_signature:
-                args.append(parsed_value)
-
-        return args, kwargs
-
     def build(self, mapped_op: MappedOp) -> TestCase:
         tensor_map = self._build_tensors(mapped_op.op_info)
-        args, kwargs = self._build_args_and_kwargs(mapped_op)
 
-        positional_args = []
+        positional_args: List[Any] = []
+        kwargs: Dict[str, Any] = {}
         concrete = mapped_op.op_info.concrete_inputs
         use_index = len(concrete) == len(mapped_op.op_info.input_types)
         concrete_idx = 0
@@ -275,34 +206,26 @@ class TensorBuilder:
                     positional_args.append(None)
                 else:
                     if use_index:
-                        if i < len(concrete):
-                            value = concrete[i]
-                            parsed = self._parse_value(value) if value != "" else None
-                            positional_args.append(parsed)
+                        if i < len(concrete) and concrete[i] != "":
+                            positional_args.append(self._parse_value(concrete[i]))
                         else:
                             positional_args.append(None)
                     else:
-                        if concrete_idx < len(concrete):
-                            value = concrete[concrete_idx]
+                        if concrete_idx < len(concrete) and concrete[concrete_idx] != "":
+                            positional_args.append(self._parse_value(concrete[concrete_idx]))
                             concrete_idx += 1
-                            parsed = self._parse_value(value) if value != "" else None
-                            positional_args.append(parsed)
                         else:
                             positional_args.append(None)
             else:
                 if use_index:
-                    if i < len(concrete):
-                        value = concrete[i]
-                        parsed = self._parse_value(value) if value != "" else None
-                        positional_args.append(parsed)
+                    if i < len(concrete) and concrete[i] != "":
+                        positional_args.append(self._parse_value(concrete[i]))
                     else:
                         positional_args.append(None)
                 else:
-                    if concrete_idx < len(concrete):
-                        value = concrete[concrete_idx]
+                    if concrete_idx < len(concrete) and concrete[concrete_idx] != "":
+                        positional_args.append(self._parse_value(concrete[concrete_idx]))
                         concrete_idx += 1
-                        parsed = self._parse_value(value) if value != "" else None
-                        positional_args.append(parsed)
                     else:
                         positional_args.append(None)
 
@@ -314,6 +237,9 @@ class TensorBuilder:
                 positional_args.pop()
         elif base_name == "arange":
             while len(positional_args) > 3:
+                positional_args.pop()
+        elif base_name == "batch_norm":
+            while len(positional_args) > 8:
                 positional_args.pop()
 
         if base_name == "add" and len(positional_args) >= 3 and positional_args[-1] is not None:
@@ -357,13 +283,11 @@ class TensorBuilder:
             else:
                 positional_args.append(1.0)
 
-        positional_args = [a for a in positional_args if a is not None]
+        while positional_args and positional_args[-1] is None:
+            positional_args.pop()
 
         if base_name == "div" and len(positional_args) == 1:
             positional_args.append(1.0)
-
-        if base_name == "arange":
-            positional_args = [a for a in positional_args if a is not None]
 
         if base_name == "exp" and len(positional_args) > 1:
             positional_args = positional_args[:1]
@@ -375,15 +299,6 @@ class TensorBuilder:
             elif isinstance(dim_arg, int):
                 positional_args[2] = (dim_arg,)
 
-        if base_name.endswith("_") and base_name not in ("_", ""):
-            return TestCase(
-                mapped_op=mapped_op,
-                input_tensors=list(tensor_map.values()),
-                args=[],
-                kwargs={},
-                positional_args=[],
-            )
-
         if not positional_args and not tensor_map:
             return TestCase(
                 mapped_op=mapped_op,
@@ -393,12 +308,10 @@ class TensorBuilder:
                 positional_args=[],
             )
 
-        args = []
-
         return TestCase(
             mapped_op=mapped_op,
             input_tensors=list(tensor_map.values()),
-            args=args,
+            args=[],
             kwargs=kwargs,
             positional_args=positional_args,
         )
