@@ -3,7 +3,7 @@ import argparse
 import json
 import os
 import sys
-from typing import Optional
+from typing import List, Optional
 
 import torch
 
@@ -88,11 +88,14 @@ def cmd_analyze(args) -> int:
     return 0
 
 
-def _prepare_test_cases(args) -> tuple:
-    """提取 test 和 generate 子命令的公共逻辑
+def _prepare_mapped_ops(args) -> tuple[List[MappedOp], OpMapper]:
+    """解析、映射、去重、过滤，返回 MappedOp 列表（不构建张量）
+
+    Args:
+        args: 命令行参数对象
 
     Returns:
-        (unique_mapped_ops, test_cases, mapper) 或 (unique_mapped_ops, None, mapper)
+        (unique_mapped_ops, mapper)
     """
     from op_testgen.parser.trace_parser import HierarchicalOpInfo
 
@@ -148,13 +151,7 @@ def _prepare_test_cases(args) -> tuple:
 
     unique_mapped_ops.sort(key=lambda m: (m.op_info.name, -m.op_info.duration_us))
 
-    if not unique_mapped_ops:
-        return [], None, mapper
-
-    builder = TensorBuilder(seed=args.seed)
-    test_cases = [builder.build(m) for m in unique_mapped_ops]
-
-    return unique_mapped_ops, test_cases, mapper
+    return unique_mapped_ops, mapper
 
 
 def cmd_test(args) -> int:
@@ -164,14 +161,13 @@ def cmd_test(args) -> int:
     print("=" * 60)
 
     print("\n[1/4] 解析并准备测试用例...")
-    unique_mapped_ops, test_cases, mapper = _prepare_test_cases(args)
+    mapped_ops, mapper = _prepare_mapped_ops(args)
 
-    if not unique_mapped_ops:
+    if not mapped_ops:
         print("错误：没有可测试的算子")
         return 1
 
-    print(f"  成功映射并去重: {len(unique_mapped_ops)} 个算子")
-    print(f"  构建 {len(test_cases)} 个测试用例")
+    print(f"  成功映射并去重: {len(mapped_ops)} 个算子")
 
     # 确定后端
     backends = []
@@ -182,6 +178,7 @@ def cmd_test(args) -> int:
     else:
         backends = [args.backend]
 
+    builder = TensorBuilder(seed=args.seed)
     all_correctness = []
     all_perf = []
 
@@ -191,43 +188,58 @@ def cmd_test(args) -> int:
         print(f"{'='*60}")
 
         if not args.only_performance:
-            print(f"\n[4/6] 执行正确性测试...")
+            print(f"\n[2/4] 执行正确性测试...")
             correctness_runner = CorrectnessRunner(fail_fast=args.fail_fast)
             correctness_results = []
 
             from itertools import groupby
-            for op_name, group in groupby(test_cases, key=lambda tc: tc.mapped_op.op_info.name):
+            for op_name, group in groupby(mapped_ops, key=lambda m: m.op_info.name):
                 group_list = list(group)
                 print(f"\n  算子: {op_name} ({len(group_list)} 个变体)")
-                for tc in group_list:
-                    result = correctness_runner.run(tc, backend=backend)
-                    correctness_results.append(result)
-                    all_correctness.append(result)
-                    status = "通过" if result.passed else "失败"
-                    if result.error_message:
-                        print(f"    [{status}] {result.op_name}: {result.error_message}")
-                    else:
-                        print(f"    [{status}] {result.op_name}: max_abs={result.max_abs_err:.2e}, max_rel={result.max_rel_err:.2e}, avg_abs={result.avg_abs_err:.2e}, avg_rel={result.avg_rel_err:.2e}")
-                    if result.input_info:
-                        print(f"      input: {result.input_info}")
+                for mapped_op in group_list:
+                    test_case = builder.build(mapped_op)
+                    try:
+                        result = correctness_runner.run(test_case, backend=backend)
+                        correctness_results.append(result)
+                        all_correctness.append(result)
+                        status = "通过" if result.passed else "失败"
+                        if result.error_message:
+                            print(f"    [{status}] {result.op_name}: {result.error_message}")
+                        else:
+                            print(f"    [{status}] {result.op_name}: max_abs={result.max_abs_err:.2e}, max_rel={result.max_rel_err:.2e}, avg_abs={result.avg_abs_err:.2e}, avg_rel={result.avg_rel_err:.2e}")
+                        if result.input_info:
+                            print(f"      input: {result.input_info}")
+                    finally:
+                        del test_case
+                        if torch.cuda.is_available():
+                            torch.cuda.empty_cache()
             passed = sum(1 for r in correctness_results if r.passed)
             print(f"\n  通过: {passed}/{len(correctness_results)}")
 
         if not args.only_correctness:
-            print(f"\n[5/6] 执行性能测试...")
+            print(f"\n[3/4] 执行性能测试...")
             perf_benchmark = PerfBenchmark(benchmark_iters=args.iters)
 
             from itertools import groupby
-            for op_name, group in groupby(test_cases, key=lambda tc: tc.mapped_op.op_info.name):
+            for op_name, group in groupby(mapped_ops, key=lambda m: m.op_info.name):
                 group_list = list(group)
                 print(f"\n  算子: {op_name} ({len(group_list)} 个变体)")
-                perf_results = perf_benchmark.run_all(group_list, backend=backend)
-                all_perf.extend(perf_results)
-            avg_speedup = sum(r.speedup for r in all_perf) / len(all_perf) if all_perf else 1.0
-            print(f"\n  平均加速比: {avg_speedup:.2f}x")
+                for mapped_op in group_list:
+                    test_case = builder.build(mapped_op)
+                    try:
+                        result = perf_benchmark.run(test_case, backend=backend)
+                        all_perf.append(result)
+                    finally:
+                        del test_case
+                        if torch.cuda.is_available():
+                            torch.cuda.empty_cache()
+            backend_perf = [r for r in all_perf if r.backend == backend]
+            if backend_perf:
+                avg_speedup = sum(r.speedup for r in backend_perf) / len(backend_perf)
+                print(f"\n  平均加速比: {avg_speedup:.2f}x")
 
     # 生成报告
-    print(f"\n[6/6] 生成报告...")
+    print(f"\n[4/4] 生成报告...")
     if args.format in ("markdown", "all"):
         md_reporter = MarkdownReporter()
         md_path = args.output if args.output.endswith(".md") else args.output + ".md"
@@ -249,7 +261,7 @@ def cmd_test(args) -> int:
             json_path += ".json"
         report_data = {
             "summary": {
-                "total_ops": len(test_cases),
+                "total_ops": len(mapped_ops),
                 "correctness_passed": sum(1 for r in all_correctness if r.passed),
                 "correctness_failed": sum(1 for r in all_correctness if not r.passed),
             },
@@ -309,18 +321,18 @@ def cmd_generate(args) -> int:
     print("=" * 60)
 
     print("\n[1/2] 解析并准备测试用例...")
-    unique_mapped_ops, _, mapper = _prepare_test_cases(args)
+    mapped_ops, mapper = _prepare_mapped_ops(args)
 
-    if not unique_mapped_ops:
+    if not mapped_ops:
         print("错误：没有可测试的算子")
         return 1
 
-    print(f"  成功映射并去重: {len(unique_mapped_ops)} 个算子")
+    print(f"  成功映射并去重: {len(mapped_ops)} 个算子")
 
     print("\n[2/2] 生成测试文件...")
     generator = TestCaseGenerator()
     output_path = generator.generate(
-        mapped_ops=unique_mapped_ops,
+        mapped_ops=mapped_ops,
         output_path=args.output,
         source_trace=args.trace_file,
         backend=args.backend,
