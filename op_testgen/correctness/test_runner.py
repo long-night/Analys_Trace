@@ -174,18 +174,17 @@ class CorrectnessRunner:
             target_positional = []
             for arg in test_case.positional_args:
                 if isinstance(arg, torch.Tensor):
+                    t = arg.clone()
                     if device_str == "cuda":
-                        target_positional.append(arg.cuda())
+                        target_positional.append(t.cuda())
                     else:
-                        target_positional.append(arg.clone().cpu())
+                        target_positional.append(t.cpu())
                 elif isinstance(arg, list):
                     moved = []
                     for t in arg:
                         if isinstance(t, torch.Tensor):
-                            if device_str == "cuda":
-                                moved.append(t.cuda())
-                            else:
-                                moved.append(t.clone().cpu())
+                            t_clone = t.clone()
+                            moved.append(t_clone.cuda() if device_str == "cuda" else t_clone.cpu())
                         else:
                             moved.append(t)
                     target_positional.append(moved)
