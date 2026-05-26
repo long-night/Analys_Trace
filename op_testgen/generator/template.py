@@ -12,13 +12,12 @@ import argparse
 import fnmatch
 import importlib
 import sys
-from itertools import groupby
 from typing import Any, Dict, List, Optional
 
 import torch
 
 # 仅依赖 op_testgen 的核心测试执行模块
-from op_testgen.builder.tensor_builder import TensorBuilder, TestCase
+from op_testgen.builder.tensor_builder import TensorBuilder
 from op_testgen.correctness.test_runner import CorrectnessRunner
 from op_testgen.perf.benchmark import PerfBenchmark
 from op_testgen.reporter.markdown_reporter import MarkdownReporter
@@ -57,43 +56,30 @@ class _MappedOp:
         self.support_status = "generated"
 
 
-def build_test_cases(seed: int = ${seed}) -> List[TestCase]:
-    torch.manual_seed(seed)
-    builder = TensorBuilder(seed=seed)
-    test_cases = []
+def _build_mapped_op(data: Dict[str, Any]) -> Optional[_MappedOp]:
+    """从序列化数据构造 _MappedOp（不构建张量）"""
+    op_info = _OpInfo(
+        name=data["op_name"],
+        input_dims=data["input_dims"],
+        input_strides=data["input_strides"],
+        input_types=data["input_types"],
+        concrete_inputs=data["concrete_inputs"],
+    )
 
-    for data in TEST_CASES_DATA:
-        op_info = _OpInfo(
-            name=data["op_name"],
-            input_dims=data["input_dims"],
-            input_strides=data["input_strides"],
-            input_types=data["input_types"],
-            concrete_inputs=data["concrete_inputs"],
-        )
+    parts = data["callable_path"].split(".")
+    try:
+        module = importlib.import_module(".".join(parts[:-1]))
+        callable_obj = getattr(module, parts[-1])
+    except (ImportError, AttributeError) as e:
+        print(f"  警告: 无法导入 {data['callable_path']}: {e}")
+        return None
 
-        parts = data["callable_path"].split(".")
-        try:
-            module = importlib.import_module(".".join(parts[:-1]))
-            callable_obj = getattr(module, parts[-1])
-        except (ImportError, AttributeError) as e:
-            print(f"  警告: 无法导入 {data['callable_path']}: {e}")
-            continue
-
-        mapped_op = _MappedOp(
-            op_info=op_info,
-            callable_obj=callable_obj,
-            callable_path=data["callable_path"],
-            namespace=parts[0],
-        )
-
-        try:
-            test_case = builder.build(mapped_op)
-            test_cases.append(test_case)
-        except Exception as e:
-            print(f"  警告: 构建 {data['op_name']} 失败: {e}")
-            continue
-
-    return test_cases
+    return _MappedOp(
+        op_info=op_info,
+        callable_obj=callable_obj,
+        callable_path=data["callable_path"],
+        namespace=parts[0],
+    )
 
 
 def main(argv=None) -> int:
@@ -114,21 +100,22 @@ def main(argv=None) -> int:
     print("Auto-generated Operator Tests")
     print("=" * 60)
 
-    test_cases = build_test_cases(seed=args.seed)
-
+    # 过滤数据（不构建张量）
+    test_data = TEST_CASES_DATA
     if args.op_filter:
-        test_cases = [
-            tc for tc in test_cases
-            if fnmatch.fnmatch(tc.mapped_op.op_info.name, args.op_filter)
+        test_data = [
+            d for d in TEST_CASES_DATA
+            if fnmatch.fnmatch(d["op_name"], args.op_filter)
         ]
-        print(f"\\n应用过滤 '{args.op_filter}' 后: {len(test_cases)} 个测试用例")
+        print(f"\\n应用过滤 '{args.op_filter}' 后: {len(test_data)} 个测试用例")
     else:
-        print(f"\\n构建 {len(test_cases)} 个测试用例")
+        print(f"\\n共 {len(test_data)} 个测试用例待执行")
 
-    if not test_cases:
+    if not test_data:
         print("错误: 没有可测试的算子")
         return 1
 
+    builder = TensorBuilder(seed=args.seed)
     all_correctness = []
     all_perf = []
 
@@ -136,11 +123,13 @@ def main(argv=None) -> int:
         print("\\n执行正确性测试...")
         runner = CorrectnessRunner(fail_fast=args.fail_fast)
 
-        for op_name, group in groupby(test_cases, key=lambda tc: tc.mapped_op.op_info.name):
-            group_list = list(group)
-            print(f"\\n  算子: {op_name} ({len(group_list)} 个变体)")
-            for tc in group_list:
-                result = runner.run(tc, backend=args.backend)
+        for data in test_data:
+            mapped_op = _build_mapped_op(data)
+            if mapped_op is None:
+                continue
+            test_case = builder.build(mapped_op)
+            try:
+                result = runner.run(test_case, backend=args.backend)
                 all_correctness.append(result)
                 status = "通过" if result.passed else "失败"
                 if result.error_message:
@@ -149,6 +138,10 @@ def main(argv=None) -> int:
                     print(f"    [{status}] {result.op_name}: max_abs={result.max_abs_err:.2e}, max_rel={result.max_rel_err:.2e}, avg_abs={result.avg_abs_err:.2e}, avg_rel={result.avg_rel_err:.2e}")
                 if result.input_info:
                     print(f"      input: {result.input_info}")
+            finally:
+                del test_case
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
         passed = sum(1 for r in all_correctness if r.passed)
         print(f"\\n  通过: {passed}/{len(all_correctness)}")
 
@@ -156,11 +149,18 @@ def main(argv=None) -> int:
         print("\\n执行性能测试...")
         benchmark = PerfBenchmark(benchmark_iters=args.iters)
 
-        for op_name, group in groupby(test_cases, key=lambda tc: tc.mapped_op.op_info.name):
-            group_list = list(group)
-            print(f"\\n  算子: {op_name} ({len(group_list)} 个变体)")
-            perf_results = benchmark.run_all(group_list, backend=args.backend)
-            all_perf.extend(perf_results)
+        for data in test_data:
+            mapped_op = _build_mapped_op(data)
+            if mapped_op is None:
+                continue
+            test_case = builder.build(mapped_op)
+            try:
+                result = benchmark.run(test_case, backend=args.backend)
+                all_perf.append(result)
+            finally:
+                del test_case
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
         if all_perf:
             avg_speedup = sum(r.speedup for r in all_perf) / len(all_perf)
             print(f"\\n  平均加速比: {avg_speedup:.2f}x")
@@ -188,7 +188,7 @@ def main(argv=None) -> int:
         import json as _json
         report_data = {
             "summary": {
-                "total_ops": len(test_cases),
+                "total_ops": len(test_data),
                 "correctness_passed": sum(1 for r in all_correctness if r.passed),
                 "correctness_failed": sum(1 for r in all_correctness if not r.passed),
             },
