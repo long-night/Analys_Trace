@@ -69,6 +69,79 @@ class TensorBuilder:
     def _is_floating(self, dtype: torch.dtype) -> bool:
         return dtype in (torch.float32, torch.float64, torch.float16, torch.bfloat16)
 
+    @staticmethod
+    def _compute_storage_requirements(size: tuple, stride: tuple) -> tuple[int, int]:
+        """计算 as_strided 所需的底层存储大小和 offset。
+
+        原理：
+        - 每个维度的索引范围是 [0, size[i]-1]
+        - 该维度的 offset 范围取决于 stride 的正负
+        - 总 offset 的最小值可能为负，需要 storage_offset 平移到非负
+        - 存储大小 = 最大总 offset - 最小总 offset + 1
+
+        Args:
+            size: 张量各维度大小
+            stride: 张量各维度步长
+
+        Returns:
+            (storage_size, storage_offset)
+        """
+        dim_offsets = []
+        for s, st in zip(size, stride):
+            if st >= 0:
+                start, end = 0, (s - 1) * st
+            else:
+                start, end = (s - 1) * st, 0
+            dim_offsets.append((start, end))
+
+        total_start = sum(start for start, _ in dim_offsets)
+        total_end = sum(end for _, end in dim_offsets)
+        storage_size = total_end - total_start + 1
+        storage_offset = -total_start
+
+        return storage_size, storage_offset
+
+    def _create_data_tensor(self, size, dtype: torch.dtype, op_name: str = "") -> torch.Tensor:
+        """根据算子特性创建带适当初始值的张量。
+
+        Args:
+            size: 张量大小（int 或 tuple）
+            dtype: 数据类型
+            op_name: 算子名称，用于特殊初始化
+
+        Returns:
+            初始化后的张量
+        """
+        if isinstance(size, int):
+            size = (size,)
+
+        base_name = op_name.replace("aten::", "").replace("aten::_", "")
+
+        if self._is_floating(dtype):
+            if base_name in ("rsqrt", "sqrt", "log", "log1p", "reciprocal"):
+                t = torch.rand(size, dtype=dtype) + 0.1
+            elif base_name in ("asin", "acos", "atan"):
+                t = torch.rand(size, dtype=dtype) * 2 - 1
+            elif base_name in ("acos",):
+                t = torch.rand(size, dtype=dtype) * 1.8 - 0.9
+            elif base_name in ("atanh",):
+                t = torch.rand(size, dtype=dtype) * 1.8 - 0.9
+            elif base_name in ("div", "true_divide", "floor_divide"):
+                t = torch.randn(size, dtype=dtype)
+                t = torch.where(t == 0, torch.ones_like(t), t)
+            elif base_name in ("pow",):
+                t = torch.randn(size, dtype=dtype).abs() + 0.1
+            elif base_name in ("softmax",):
+                t = torch.randn(size, dtype=dtype) * 20 - 10
+            else:
+                t = torch.randn(size, dtype=dtype) * 2 - 1
+        elif dtype == torch.bool:
+            t = torch.randint(low=0, high=2, size=size, dtype=dtype)
+        else:
+            t = torch.randint(low=0, high=10, size=size, dtype=dtype)
+
+        return t
+
     _HARDCODED_KWARG_NAMES = {
         "log_softmax": {"dtype"},
     }
@@ -95,39 +168,65 @@ class TensorBuilder:
         return kwarg_names
 
     def _build_tensor(self, dims, strides, dtype: torch.dtype, op_name: str = "") -> torch.Tensor:
+        # 解析 dims（处理嵌套列表的情况）
         if isinstance(dims, list) and len(dims) > 0 and isinstance(dims[0], list):
             dims = dims[0]
-        dims_tuple = tuple(dims)
-        base_name = op_name.replace("aten::", "").replace("aten::_", "")
-        if self._is_floating(dtype):
-            if base_name in ("rsqrt", "sqrt", "log", "log1p", "reciprocal"):
-                t = torch.rand(dims_tuple, dtype=dtype) + 0.1
-            elif base_name in ("asin", "acos", "atan"):
-                t = torch.rand(dims_tuple, dtype=dtype) * 2 - 1
-            elif base_name in ("acos"):
-                t = torch.rand(dims_tuple, dtype=dtype) * 1.8 - 0.9
-            elif base_name in ("atanh"):
-                t = torch.rand(dims_tuple, dtype=dtype) * 1.8 - 0.9
-            elif base_name in ("div", "true_divide", "floor_divide"):
-                t = torch.randn(dims_tuple, dtype=dtype)
-                t = torch.where(t == 0, torch.ones_like(t), t)
-            elif base_name in ("pow"):
-                t = torch.randn(dims_tuple, dtype=dtype).abs() + 0.1
-            else:
-                t = torch.randn(dims_tuple, dtype=dtype)
-        elif dtype == torch.bool:
-            t = torch.randint(low=0, high=2, size=dims_tuple, dtype=dtype)
-        else:
-            t = torch.randint(low=0, high=10, size=dims_tuple, dtype=dtype)
+        size_tuple = tuple(dims)
 
-        if strides is not None and len(strides) == len(dims_tuple):
-            try:
-                if isinstance(strides, list) and len(strides) > 0 and isinstance(strides[0], list):
-                    strides = strides[0]
-                t = torch.as_strided(t, size=dims_tuple, stride=tuple(strides))
-            except RuntimeError:
-                pass
-        return t
+        # 无 stride 信息或长度不匹配：创建连续张量（正常路径，不警告）
+        if strides is None or len(strides) != len(size_tuple):
+            return self._create_data_tensor(size_tuple, dtype, op_name)
+
+        # 解析 strides（处理嵌套列表的情况）
+        if isinstance(strides, list) and len(strides) > 0 and isinstance(strides[0], list):
+            strides = strides[0]
+        stride_tuple = tuple(strides)
+
+        try:
+            # 计算底层存储大小（使用 abs(stride) 确保大小正确）
+            storage_size = sum((s - 1) * abs(st) for s, st in zip(size_tuple, stride_tuple)) + 1
+
+            # 创建足够大的底层张量
+            base_tensor = self._create_data_tensor(storage_size, dtype, op_name)
+
+            # 检查是否有负 stride
+            has_negative = any(st < 0 for st in stride_tuple)
+
+            if not has_negative:
+                # 标准路径：正 stride，直接 as_strided
+                return torch.as_strided(
+                    base_tensor,
+                    size=size_tuple,
+                    stride=stride_tuple,
+                    storage_offset=0
+                )
+            else:
+                # 负 stride 模拟路径：用 abs(stride) + flip
+                abs_strides = tuple(abs(st) for st in stride_tuple)
+                t = torch.as_strided(
+                    base_tensor,
+                    size=size_tuple,
+                    stride=abs_strides,
+                    storage_offset=0
+                )
+
+                # 对负 stride 维度 flip，使数据遍历顺序一致
+                flip_dims = [i for i, st in enumerate(stride_tuple) if st < 0]
+                t = torch.flip(t, dims=flip_dims)
+
+                return t
+
+        except Exception as e:
+            # 明确记录失败信息，不静默回退
+            import warnings
+            warnings.warn(
+                f"TensorBuilder 无法为算子 '{op_name}' 创建非连续张量: {e}. "
+                f"size={size_tuple}, stride={stride_tuple}. "
+                f"回退到连续张量。",
+                RuntimeWarning,
+                stacklevel=2
+            )
+            return self._create_data_tensor(size_tuple, dtype, op_name)
 
     def _build_tensors(self, op_info) -> Dict[int, torch.Tensor]:
         tensors: Dict[int, torch.Tensor] = {}
