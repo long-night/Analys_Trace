@@ -43,15 +43,15 @@ class CorrectnessRunner:
         return thresholds.get("float32", (1e-5, 1e-4))
 
     def _check_tolerance(self, cpu_out: torch.Tensor, cuda_out: torch.Tensor, atol: float, rtol: float) -> bool:
-        if cpu_out.dtype == torch.bool:
-            cpu_out = cpu_out.to(torch.int32)
-            cuda_out = cuda_out.to(torch.int32)
+        if cpu_out.dtype != cuda_out.dtype:
+            cpu_out = cpu_out.to(torch.float64)
+            cuda_out = cuda_out.to(torch.float64)
         diff = torch.abs(cpu_out - cuda_out)
         tolerance = atol + rtol * torch.abs(cpu_out)
         return bool(torch.all(diff <= tolerance))
 
     def _compute_errors(self, cpu_out: torch.Tensor, cuda_out: torch.Tensor) -> Dict[str, float]:
-        if cpu_out.dtype == torch.bool:
+        if cpu_out.dtype != cuda_out.dtype:
             cpu_out = cpu_out.to(torch.float64)
             cuda_out = cuda_out.to(torch.float64)
         diff = torch.abs(cpu_out - cuda_out)
