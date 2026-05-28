@@ -6,17 +6,16 @@
 TEST_FILE_TEMPLATE = '''#!/usr/bin/env python3
 # Auto-generated test cases from trace: ${source_trace}
 # Generated at: ${generated_at}
-# Default options: backend=${backend}, seed=${seed}, iters=${iters}
+# Default options: backend=${backend}, seed=${seed}, cpu_iters=${cpu_iters}, target_iters=${target_iters}
 
 import argparse
 import fnmatch
 import importlib
 import sys
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 import torch
 
-# 仅依赖 op_testgen 的核心测试执行模块
 from op_testgen.builder.tensor_builder import TensorBuilder
 from op_testgen.correctness.test_runner import CorrectnessRunner
 from op_testgen.perf.benchmark import PerfBenchmark
@@ -33,7 +32,6 @@ except ImportError:
 TEST_CASES_DATA = ${test_cases_data_repr}
 
 
-# 简化数据类，避免导入 parser/mapper 模块
 class _OpInfo:
     __slots__ = ("name", "input_dims", "input_strides", "input_types", "concrete_inputs")
 
@@ -57,7 +55,6 @@ class _MappedOp:
 
 
 def _build_mapped_op(data: Dict[str, Any]) -> Optional[_MappedOp]:
-    """从序列化数据构造 _MappedOp（不构建张量）"""
     op_info = _OpInfo(
         name=data["op_name"],
         input_dims=data["input_dims"],
@@ -87,7 +84,8 @@ def main(argv=None) -> int:
     parser.add_argument("--backend", default="${backend}", choices=["cuda", "swdnn", "cpu"])
     parser.add_argument("--only-correctness", action="store_true")
     parser.add_argument("--only-performance", action="store_true")
-    parser.add_argument("--iters", type=int, default=${iters})
+    parser.add_argument("--cpu-iters", type=int, default=${cpu_iters})
+    parser.add_argument("--target-iters", type=int, default=${target_iters})
     parser.add_argument("--fail-fast", action="store_true")
     parser.add_argument("--seed", type=int, default=${seed})
     parser.add_argument("--op-filter", type=str, default=None)
@@ -100,7 +98,6 @@ def main(argv=None) -> int:
     print("Auto-generated Operator Tests")
     print("=" * 60)
 
-    # 过滤数据（不构建张量）
     test_data = TEST_CASES_DATA
     if args.op_filter:
         test_data = [
@@ -119,51 +116,55 @@ def main(argv=None) -> int:
     all_correctness = []
     all_perf = []
 
-    if not args.only_performance:
-        print("\\n执行正确性测试...")
-        runner = CorrectnessRunner(fail_fast=args.fail_fast)
+    for data in test_data:
+        mapped_op = _build_mapped_op(data)
+        if mapped_op is None:
+            continue
+        test_case = builder.build(mapped_op)
+        cpu_baseline_cache: Optional[Tuple[torch.Tensor, float]] = None
+        correctness_result = None
 
-        for data in test_data:
-            mapped_op = _build_mapped_op(data)
-            if mapped_op is None:
-                continue
-            test_case = builder.build(mapped_op)
-            try:
-                result = runner.run(test_case, backend=args.backend)
-                all_correctness.append(result)
-                status = "通过" if result.passed else "失败"
-                if result.error_message:
-                    print(f"    [{status}] {result.op_name}: {result.error_message}")
+        try:
+            if not args.only_performance:
+                runner = CorrectnessRunner(fail_fast=args.fail_fast)
+                correctness_result = runner.run(
+                    test_case, backend=args.backend,
+                    cpu_baseline_cache=cpu_baseline_cache
+                )
+                all_correctness.append(correctness_result)
+                if cpu_baseline_cache is None:
+                    cpu_baseline_cache = (
+                        correctness_result.cpu_out,
+                        correctness_result.cpu_time_ms
+                    )
+                status = "通过" if correctness_result.passed else "失败"
+                if correctness_result.error_message:
+                    print(f"    [正确性 {status}] {correctness_result.op_name}: {correctness_result.error_message}")
                 else:
-                    print(f"    [{status}] {result.op_name}: max_abs={result.max_abs_err:.2e}, max_rel={result.max_rel_err:.2e}, avg_abs={result.avg_abs_err:.2e}, avg_rel={result.avg_rel_err:.2e}")
-                if result.input_info:
-                    print(f"      input: {result.input_info}")
-            finally:
-                del test_case
-                if torch.cuda.is_available():
-                    torch.cuda.empty_cache()
-        passed = sum(1 for r in all_correctness if r.passed)
-        print(f"\\n  通过: {passed}/{len(all_correctness)}")
+                    print(f"    [正确性 {status}] {correctness_result.op_name}: max_abs={correctness_result.max_abs_err:.2e}, max_rel={correctness_result.max_rel_err:.2e}")
+                if correctness_result.input_info:
+                    print(f"      input: {correctness_result.input_info}")
 
-    if not args.only_correctness:
-        print("\\n执行性能测试...")
-        benchmark = PerfBenchmark(benchmark_iters=args.iters)
-
-        for data in test_data:
-            mapped_op = _build_mapped_op(data)
-            if mapped_op is None:
-                continue
-            test_case = builder.build(mapped_op)
-            try:
-                result = benchmark.run(test_case, backend=args.backend)
+            if not args.only_correctness:
+                benchmark = PerfBenchmark(cpu_iters=args.cpu_iters, target_iters=args.target_iters)
+                cpu_time_ms = correctness_result.cpu_time_ms if correctness_result else None
+                result = benchmark.run(
+                    test_case, backend=args.backend,
+                    cpu_time_ms=cpu_time_ms
+                )
                 all_perf.append(result)
-            finally:
-                del test_case
-                if torch.cuda.is_available():
-                    torch.cuda.empty_cache()
-        if all_perf:
-            avg_speedup = sum(r.speedup for r in all_perf) / len(all_perf)
-            print(f"\\n  平均加速比: {avg_speedup:.2f}x")
+
+        finally:
+            del test_case
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+
+    passed = sum(1 for r in all_correctness if r.passed)
+    if passed > 0 or all_correctness:
+        print(f"\\n  正确性通过: {passed}/{len(all_correctness)}")
+    if all_perf:
+        avg_speedup = sum(r.speedup for r in all_perf) / len(all_perf)
+        print(f"  平均加速比: {avg_speedup:.2f}x")
 
     print("\\n[报告] 生成测试报告...")
     if args.format in ("markdown", "all"):
