@@ -178,7 +178,8 @@ op_testgen run tests/test_ops.py --backend cuda --only-performance
 | `--seed` | 随机种子 | `42` |
 | `--max-ops` | 最大测试算子数（去重后） | `100` |
 | `--op-filter` | 算子名称过滤（通配符） | *(无)* |
-| `--iters` | 性能测试迭代次数 | `10` |
+| `--iters` | 性能测试迭代次数（target backend） | `3` |
+| `--cpu-iters` | CPU baseline 迭代次数 | `1` |
 | `--test-all-ops` | 生成所有算子（默认仅根节点） | `False` |
 | `--update-blacklist` | 将未映射算子加入黑名单 | `False` |
 
@@ -190,7 +191,8 @@ op_testgen run tests/test_ops.py --backend cuda --only-performance
 | `--backend` | 后端（覆盖文件默认值） | 文件内默认值 |
 | `--only-correctness` | 仅正确性测试 | `False` |
 | `--only-performance` | 仅性能测试 | `False` |
-| `--iters` | 性能测试迭代次数（覆盖） | 文件内默认值 |
+| `--iters` | 性能测试迭代次数（target backend，覆盖） | 文件内默认值 |
+| `--cpu-iters` | CPU baseline 迭代次数（覆盖） | 文件内默认值 |
 | `--fail-fast` | 第一个失败即停止 | `False` |
 | `--op-filter` | 算子名称过滤（通配符） | *(无)* |
 | `--format` | 报告格式（覆盖） | 文件内默认值 |
@@ -205,7 +207,8 @@ op_testgen run tests/test_ops.py --backend cuda --only-performance
 | `-o, --output` | 输出报告文件路径 | `op_testgen_report.md` |
 | `--format` | 输出格式 | `markdown` |
 | `--seed` | 随机种子 | `42` |
-| `--iters` | 性能测试迭代次数 | `10` |
+| `--iters` | 性能测试迭代次数（target backend） | `3` |
+| `--cpu-iters` | CPU baseline 迭代次数 | `1` |
 | `--max-ops` | 最大测试算子数 | `100` |
 | `--fail-fast` | 第一个失败即停止 | `False` |
 | `--only-correctness` | 仅正确性测试 | `False` |
@@ -250,6 +253,27 @@ profiler_trace.json
             │   Reporter    │ ──► Markdown / HTML / JSON / Excel
             └───────────────┘
 ```
+
+### 测试执行流程
+
+**执行顺序**：算子外层循环 → backend 内层循环 → 每个用例先正确性后性能
+
+```
+for mapped_op in ops:
+    test_case = builder.build(mapped_op)          # 每个算子只 build 一次
+    cpu_baseline_cache = None
+    
+    for backend in backends:
+        correctness_result = runner.run(..., cpu_baseline_cache=...)
+        cpu_baseline_cache = (result.cpu_out, result.cpu_time_ms)  # 跨 backend 复用
+        
+        perf_result = benchmark.run(..., cpu_time_ms=result.cpu_time_ms)  # 复用 CPU 时间
+```
+
+**关键优化**：
+- 每个算子只 `build()` 一次，减少 50% 张量分配
+- CPU baseline 只跑 1 次，跨 backend 复用结果和时间
+- 默认无 warmup，CPU baseline 1 遍，target 3 遍
 
 ### 测试文件生成与执行
 
@@ -371,6 +395,7 @@ ruff check op_testgen/ tests/
 | v0.3.0 | 2026-05 | 层级调用分析：调用树、自耗时、调用链、递归检测 |
 | v0.3.1 | 2026-05 | 调用树去重聚合视图：`[×N]` 合并、`[RECURSIVE]` 截断、树形符号 |
 | v0.4.0 | 2026-05 | 父子算子层级化：默认仅测试根节点，CSV/Excel 使用层级路径 `root/child1/child2` |
+| v0.5.0 | 2026-05 | 测试流程重构：算子外层→backend 内层循环；CPU baseline 跨 backend 复用；correctness CPU 时间复用于 performance speedup 计算；默认配置优化（warmup=0, CPU=1遍, target=3遍）；`--op-filter` 支持子算子过滤 |
 
 ## License
 
