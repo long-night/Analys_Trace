@@ -34,8 +34,10 @@ class Settings:
     })
 
     # 性能测试
-    perf_warmup_iters: int = 3
-    perf_benchmark_iters: int = 10
+    perf_warmup_iters: int = 0
+    perf_cpu_iters: int = 1
+    perf_target_iters: int = 3
+    perf_benchmark_iters: int = 3  # 保留兼容，语义等同 target_iters
 
     # 随机种子
     random_seed: int = 42
