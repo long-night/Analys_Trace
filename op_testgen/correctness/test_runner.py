@@ -22,6 +22,8 @@ class CorrectnessResult:
     error_message: Optional[str] = None
     output_shapes_match: bool = True
     input_info: str = ""
+    cpu_time_ms: float = 0.0
+    cpu_out: Optional[torch.Tensor] = None
 
 
 class CorrectnessRunner:
@@ -95,6 +97,8 @@ class CorrectnessRunner:
         op = test_case.mapped_op
         op_name = op.op_info.name
         input_info = self._format_input_info(test_case)
+        cpu_time_ms = 0.0
+        cpu_out = None
 
         # 保存原始 SWDNN 状态，确保测试结束后恢复
         prev_swdnn = os.environ.get("SWDNN", "OFF")
@@ -114,13 +118,19 @@ class CorrectnessRunner:
 
             cpu_positional = to_cpu(test_case.positional_args)
 
+            import time
+            cpu_time_ms = 0.0
             try:
+                start = time.perf_counter()
                 cpu_out = op.callable(*cpu_positional, **cpu_kwargs)
+                cpu_time_ms = (time.perf_counter() - start) * 1000
             except RuntimeError as e:
                 err_msg = str(e)
                 if "itensor_view_from_dense" in err_msg or "expects float/bfloat16/half/int8" in err_msg:
                     try:
+                        start = time.perf_counter()
                         cpu_out = op.callable(*cpu_positional, **cpu_kwargs)
+                        cpu_time_ms = (time.perf_counter() - start) * 1000
                     except RuntimeError:
                         return CorrectnessResult(
                             op_name=op_name, passed=False, backend=backend,
@@ -138,6 +148,8 @@ class CorrectnessRunner:
                             op_name=op_name, passed=True, backend=backend,
                             error_message="Non-tensor output, shape check only",
                             input_info=input_info,
+                            cpu_time_ms=cpu_time_ms,
+                            cpu_out=None,
                         )
                     cpu_out = cpu_out[0]
                 else:
@@ -145,6 +157,8 @@ class CorrectnessRunner:
                         op_name=op_name, passed=True, backend=backend,
                         error_message="Non-tensor output, shape check only",
                         input_info=input_info,
+                        cpu_time_ms=cpu_time_ms,
+                        cpu_out=None,
                     )
 
             # 如果仅测试 CPU baseline，直接返回结果
@@ -153,6 +167,8 @@ class CorrectnessRunner:
                     op_name=op_name, passed=True, backend="cpu",
                     input_info=input_info,
                     error_message="CPU baseline only",
+                    cpu_time_ms=cpu_time_ms,
+                    cpu_out=cpu_out if isinstance(cpu_out, torch.Tensor) else None,
                 )
 
             # 2. SWDNN (CPU + SWDNN=ON) 或 CUDA (CUDA + SWDNN=OFF)
@@ -168,6 +184,8 @@ class CorrectnessRunner:
                     op_name=op_name, passed=False, backend=backend,
                     error_message="CUDA not available",
                     input_info=input_info,
+                    cpu_time_ms=cpu_time_ms,
+                    cpu_out=cpu_out if isinstance(cpu_out, torch.Tensor) else None,
                 )
 
             target_kwargs = {k: v for k, v in test_case.kwargs.items()}
@@ -202,6 +220,8 @@ class CorrectnessRunner:
                         op_name=op_name, passed=True, backend=backend,
                         error_message="Non-tensor output, shape check only",
                         input_info=input_info,
+                        cpu_time_ms=cpu_time_ms,
+                        cpu_out=cpu_out if isinstance(cpu_out, torch.Tensor) else None,
                     )
 
             target_out_cpu = target_out.cpu().to(torch.float64)
@@ -213,6 +233,8 @@ class CorrectnessRunner:
                     error_message=f"Shape mismatch: CPU {cpu_out.shape} vs {backend.upper()} {target_out_cpu.shape}",
                     output_shapes_match=False,
                     input_info=input_info,
+                    cpu_time_ms=cpu_time_ms,
+                    cpu_out=cpu_out if isinstance(cpu_out, torch.Tensor) else None,
                 )
 
             errors = self._compute_errors(cpu_out, target_out_cpu)
@@ -232,6 +254,8 @@ class CorrectnessRunner:
                 avg_rel_err=errors["avg_rel"],
                 backend=backend,
                 input_info=input_info,
+                cpu_time_ms=cpu_time_ms,
+                cpu_out=cpu_out if isinstance(cpu_out, torch.Tensor) else None,
             )
 
         except Exception as e:
@@ -241,14 +265,127 @@ class CorrectnessRunner:
                 backend=backend,
                 error_message=str(e),
                 input_info=input_info,
+                cpu_time_ms=cpu_time_ms,
+                cpu_out=cpu_out if 'cpu_out' in dir() and isinstance(cpu_out, torch.Tensor) else None,
             )
 
         finally:
             # 恢复原始 SWDNN 环境变量
             os.environ["SWDNN"] = prev_swdnn
 
-    def run(self, test_case: TestCase, backend: str = "cuda") -> CorrectnessResult:
-        """运行单个测试用例的正确性测试"""
+    def _run_target_only(self, test_case: TestCase, backend: str,
+                         cpu_out: torch.Tensor, cpu_time_ms: float) -> CorrectnessResult:
+        """只执行 target 分支，复用缓存的 CPU baseline 结果"""
+        op = test_case.mapped_op
+        op_name = op.op_info.name
+        input_info = self._format_input_info(test_case)
+        prev_swdnn = os.environ.get("SWDNN", "OFF")
+
+        try:
+            if backend == "swdnn":
+                os.environ["SWDNN"] = "ON"
+                device_str = "cpu"
+            else:
+                os.environ["SWDNN"] = "OFF"
+                device_str = "cuda"
+
+            if device_str == "cuda" and not torch.cuda.is_available():
+                return CorrectnessResult(
+                    op_name=op_name, passed=False, backend=backend,
+                    error_message="CUDA not available",
+                    input_info=input_info,
+                    cpu_time_ms=cpu_time_ms,
+                    cpu_out=cpu_out,
+                )
+
+            target_kwargs = {k: v for k, v in test_case.kwargs.items()}
+            target_positional = []
+            for arg in test_case.positional_args:
+                if isinstance(arg, torch.Tensor):
+                    t = arg.clone()
+                    if device_str == "cuda":
+                        target_positional.append(t.cuda())
+                    else:
+                        target_positional.append(t.cpu())
+                elif isinstance(arg, list):
+                    moved = []
+                    for t in arg:
+                        if isinstance(t, torch.Tensor):
+                            t_clone = t.clone()
+                            moved.append(t_clone.cuda() if device_str == "cuda" else t_clone.cpu())
+                        else:
+                            moved.append(t)
+                    target_positional.append(moved)
+                else:
+                    target_positional.append(arg)
+
+            target_out = op.callable(*target_positional, **target_kwargs)
+
+            if isinstance(target_out, tuple):
+                target_out = [o for o in target_out if isinstance(o, torch.Tensor)]
+                if target_out:
+                    target_out = target_out[0]
+                else:
+                    return CorrectnessResult(
+                        op_name=op_name, passed=True, backend=backend,
+                        error_message="Non-tensor output, shape check only",
+                        input_info=input_info,
+                        cpu_time_ms=cpu_time_ms,
+                        cpu_out=cpu_out,
+                    )
+
+            target_out_cpu = target_out.cpu().to(torch.float64)
+
+            if cpu_out.shape != target_out_cpu.shape:
+                return CorrectnessResult(
+                    op_name=op_name, passed=False, backend=backend,
+                    error_message=f"Shape mismatch: CPU {cpu_out.shape} vs {backend.upper()} {target_out_cpu.shape}",
+                    output_shapes_match=False,
+                    input_info=input_info,
+                    cpu_time_ms=cpu_time_ms,
+                    cpu_out=cpu_out,
+                )
+
+            errors = self._compute_errors(cpu_out, target_out_cpu)
+            dtype_str = op.op_info.input_types[0] if op.op_info.input_types else "float32"
+            atol, rtol = self._get_threshold(dtype_str, op_name)
+            passed = self._check_tolerance(cpu_out, target_out_cpu, atol, rtol)
+
+            return CorrectnessResult(
+                op_name=op_name,
+                passed=passed,
+                max_abs_err=errors["max_abs"],
+                max_rel_err=errors["max_rel"],
+                avg_abs_err=errors["avg_abs"],
+                avg_rel_err=errors["avg_rel"],
+                backend=backend,
+                input_info=input_info,
+                cpu_time_ms=cpu_time_ms,
+                cpu_out=cpu_out,
+            )
+
+        except Exception as e:
+            return CorrectnessResult(
+                op_name=op_name, passed=False, backend=backend,
+                error_message=str(e), input_info=input_info,
+                cpu_time_ms=cpu_time_ms, cpu_out=cpu_out,
+            )
+
+        finally:
+            os.environ["SWDNN"] = prev_swdnn
+
+    def run(self, test_case: TestCase, backend: str = "cuda",
+            cpu_baseline_cache: Optional[tuple] = None) -> CorrectnessResult:
+        """运行单个测试用例的正确性测试
+
+        Args:
+            test_case: 测试用例
+            backend: 目标后端
+            cpu_baseline_cache: 缓存的 (cpu_out, cpu_time_ms)，用于跨 backend 复用
+        """
+        if cpu_baseline_cache is not None:
+            cpu_out, cpu_time_ms = cpu_baseline_cache
+            return self._run_target_only(test_case, backend, cpu_out, cpu_time_ms)
         return self._run_single(test_case, backend)
 
     def run_all(self, test_cases: List[TestCase], backend: str = "cuda") -> List[CorrectnessResult]:
