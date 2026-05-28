@@ -42,3 +42,47 @@ class TestCorrectnessRunner:
         """测试 fail-fast 模式"""
         runner_failfast = CorrectnessRunner(fail_fast=True)
         assert runner_failfast.fail_fast is True
+
+    def test_cpu_baseline_timing(self, runner):
+        """测试 CPU baseline 执行时间被记录"""
+        op = OpInfo(
+            name="aten::add",
+            input_dims=[[2, 3], [2, 3]],
+            input_types=["float", "float"],
+            concrete_inputs=[0],
+        )
+        mapper = OpMapper()
+        mapped = mapper.map_operator(op)
+        assert mapped is not None
+        builder = TensorBuilder(seed=42)
+        test_case = builder.build(mapped)
+
+        result = runner.run(test_case, backend="cpu")
+        assert result.passed is True
+        assert result.cpu_time_ms > 0
+        assert result.cpu_out is not None
+
+    def test_cpu_baseline_cache_reuse(self, runner):
+        """测试跨 backend 复用 CPU baseline 缓存"""
+        op = OpInfo(
+            name="aten::add",
+            input_dims=[[2, 3], [2, 3]],
+            input_types=["float", "float"],
+            concrete_inputs=[0],
+        )
+        mapper = OpMapper()
+        mapped = mapper.map_operator(op)
+        assert mapped is not None
+        builder = TensorBuilder(seed=42)
+        test_case = builder.build(mapped)
+
+        # 第一次：完整执行（含 CPU baseline）
+        result1 = runner.run(test_case, backend="cpu")
+        assert result1.passed is True
+        assert result1.cpu_time_ms > 0
+        cache = (result1.cpu_out, result1.cpu_time_ms)
+
+        # 第二次：复用缓存（跳过 CPU baseline）
+        result2 = runner.run(test_case, backend="cpu", cpu_baseline_cache=cache)
+        assert result2.passed is True
+        assert result2.cpu_time_ms == result1.cpu_time_ms
