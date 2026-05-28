@@ -102,11 +102,14 @@ def _prepare_mapped_ops(args) -> tuple[List[MappedOp], OpMapper]:
     parser_obj = TraceParser(args.trace_file)
     op_infos = parser_obj.parse_hierarchical()
 
-    if not getattr(args, "test_all_ops", False):
+    if not getattr(args, "test_all_ops", False) and not getattr(args, "op_filter", None):
         op_infos = [op for op in op_infos if op.is_root]
         print(f"  根节点过滤: {len(op_infos)} 个根节点待测试")
     else:
-        print(f"  全量模式: {len(op_infos)} 个算子待测试")
+        if getattr(args, "op_filter", None):
+            print(f"  op-filter 模式: {len(op_infos)} 个算子待过滤")
+        else:
+            print(f"  全量模式: {len(op_infos)} 个算子待测试")
 
     mapper = OpMapper()
     mapped_ops = mapper.map_all(op_infos)
@@ -182,61 +185,67 @@ def cmd_test(args) -> int:
     all_correctness = []
     all_perf = []
 
-    for backend in backends:
-        print(f"\n{'='*60}")
-        print(f"后端: {backend.upper()}")
-        print(f"{'='*60}")
+    cpu_iters = getattr(args, "cpu_iters", 1)
+    target_iters = getattr(args, "iters", 3)
 
-        if not args.only_performance:
-            print(f"\n[2/4] 执行正确性测试...")
-            correctness_runner = CorrectnessRunner(fail_fast=args.fail_fast)
-            correctness_results = []
+    for mapped_op in mapped_ops:
+        test_case = builder.build(mapped_op)
+        cpu_baseline_cache = None
+        op_name = mapped_op.op_info.name
+        correctness_result = None
 
-            from itertools import groupby
-            for op_name, group in groupby(mapped_ops, key=lambda m: m.op_info.name):
-                group_list = list(group)
-                print(f"\n  算子: {op_name} ({len(group_list)} 个变体)")
-                for mapped_op in group_list:
-                    test_case = builder.build(mapped_op)
-                    try:
-                        result = correctness_runner.run(test_case, backend=backend)
-                        correctness_results.append(result)
-                        all_correctness.append(result)
-                        status = "通过" if result.passed else "失败"
-                        if result.error_message:
-                            print(f"    [{status}] {result.op_name}: {result.error_message}")
-                        else:
-                            print(f"    [{status}] {result.op_name}: max_abs={result.max_abs_err:.2e}, max_rel={result.max_rel_err:.2e}, avg_abs={result.avg_abs_err:.2e}, avg_rel={result.avg_rel_err:.2e}")
-                        if result.input_info:
-                            print(f"      input: {result.input_info}")
-                    finally:
-                        del test_case
-                        if torch.cuda.is_available():
-                            torch.cuda.empty_cache()
-            passed = sum(1 for r in correctness_results if r.passed)
-            print(f"\n  通过: {passed}/{len(correctness_results)}")
+        try:
+            for backend in backends:
+                print(f"\n  算子: {op_name} | 后端: {backend.upper()}")
 
-        if not args.only_correctness:
-            print(f"\n[3/4] 执行性能测试...")
-            perf_benchmark = PerfBenchmark(benchmark_iters=args.iters)
+                if not args.only_performance:
+                    correctness_runner = CorrectnessRunner(fail_fast=args.fail_fast)
+                    correctness_result = correctness_runner.run(
+                        test_case, backend,
+                        cpu_baseline_cache=cpu_baseline_cache
+                    )
+                    all_correctness.append(correctness_result)
 
-            from itertools import groupby
-            for op_name, group in groupby(mapped_ops, key=lambda m: m.op_info.name):
-                group_list = list(group)
-                print(f"\n  算子: {op_name} ({len(group_list)} 个变体)")
-                for mapped_op in group_list:
-                    test_case = builder.build(mapped_op)
-                    try:
-                        result = perf_benchmark.run(test_case, backend=backend)
-                        all_perf.append(result)
-                    finally:
-                        del test_case
-                        if torch.cuda.is_available():
-                            torch.cuda.empty_cache()
-            backend_perf = [r for r in all_perf if r.backend == backend]
-            if backend_perf:
-                avg_speedup = sum(r.speedup for r in backend_perf) / len(backend_perf)
-                print(f"\n  平均加速比: {avg_speedup:.2f}x")
+                    if cpu_baseline_cache is None:
+                        cpu_baseline_cache = (
+                            correctness_result.cpu_out,
+                            correctness_result.cpu_time_ms
+                        )
+
+                    status = "通过" if correctness_result.passed else "失败"
+                    if correctness_result.error_message:
+                        print(f"    [正确性 {status}] {correctness_result.op_name}: {correctness_result.error_message}")
+                    else:
+                        print(f"    [正确性 {status}] {correctness_result.op_name}: max_abs={correctness_result.max_abs_err:.2e}, max_rel={correctness_result.max_rel_err:.2e}")
+                    if correctness_result.input_info:
+                        print(f"      input: {correctness_result.input_info}")
+
+                if not args.only_correctness:
+                    perf_benchmark = PerfBenchmark(cpu_iters=cpu_iters, target_iters=target_iters)
+                    cpu_time_ms = correctness_result.cpu_time_ms if correctness_result else None
+                    perf_result = perf_benchmark.run(
+                        test_case, backend,
+                        cpu_time_ms=cpu_time_ms
+                    )
+                    all_perf.append(perf_result)
+
+                if args.fail_fast and correctness_result and not correctness_result.passed:
+                    print("  fail-fast: 停止后续测试")
+                    break
+
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
+
+        finally:
+            del test_case
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+
+    passed = sum(1 for r in all_correctness if r.passed)
+    print(f"\n  正确性通过: {passed}/{len(all_correctness)}")
+    if all_perf:
+        avg_speedup = sum(r.speedup for r in all_perf) / len(all_perf)
+        print(f"  平均加速比: {avg_speedup:.2f}x")
 
     # 生成报告
     print(f"\n[4/4] 生成报告...")
@@ -337,7 +346,8 @@ def cmd_generate(args) -> int:
         source_trace=args.trace_file,
         backend=args.backend,
         seed=args.seed,
-        iters=args.iters,
+        cpu_iters=getattr(args, "cpu_iters", 1),
+        target_iters=args.iters,
         format=getattr(args, "format", "markdown"),
         output=getattr(args, "report_output", "op_testgen_report.md"),
     )
@@ -482,7 +492,8 @@ def main(argv: Optional[list] = None) -> int:
     test_parser.add_argument("--format", choices=["markdown", "html", "json", "excel", "all"], default="markdown",
                             help="输出格式 (默认: markdown)")
     test_parser.add_argument("--seed", type=int, default=42, help="随机种子 (默认: 42)")
-    test_parser.add_argument("--iters", type=int, default=10, help="性能测试迭代次数")
+    test_parser.add_argument("--iters", type=int, default=3, help="性能测试迭代次数（target backend，默认: 3）")
+    test_parser.add_argument("--cpu-iters", type=int, default=1, help="CPU baseline 迭代次数（默认: 1）")
     test_parser.add_argument("--max-ops", type=int, default=100, help="最大测试算子数（默认: 100）")
     test_parser.add_argument("--fail-fast", action="store_true", help="第一个失败即停止")
     test_parser.add_argument("--only-correctness", action="store_true", help="仅执行正确性测试")
@@ -511,7 +522,8 @@ def main(argv: Optional[list] = None) -> int:
     generate_parser.add_argument("--seed", type=int, default=42, help="随机种子 (默认: 42)")
     generate_parser.add_argument("--max-ops", type=int, default=100, help="最大算子数 (默认: 100)")
     generate_parser.add_argument("--op-filter", help="算子名称过滤 (支持通配符)")
-    generate_parser.add_argument("--iters", type=int, default=10, help="性能测试迭代次数 (默认: 10)")
+    generate_parser.add_argument("--iters", type=int, default=3, help="性能测试迭代次数 (默认: 3)")
+    generate_parser.add_argument("--cpu-iters", type=int, default=1, help="CPU baseline 迭代次数 (默认: 1)")
     generate_parser.add_argument("--test-all-ops", action="store_true",
                                 help="生成所有算子的测试（默认仅生成根节点）")
     generate_parser.add_argument("--update-blacklist", action="store_true", help="将未映射算子加入黑名单")
@@ -536,7 +548,8 @@ def main(argv: Optional[list] = None) -> int:
                            help="后端 (覆盖文件默认值)")
     run_parser.add_argument("--only-correctness", action="store_true", help="仅正确性测试")
     run_parser.add_argument("--only-performance", action="store_true", help="仅性能测试")
-    run_parser.add_argument("--iters", type=int, help="性能测试迭代次数")
+    run_parser.add_argument("--iters", type=int, help="性能测试迭代次数（target backend）")
+    run_parser.add_argument("--cpu-iters", type=int, help="CPU baseline 迭代次数")
     run_parser.add_argument("--fail-fast", action="store_true", help="第一个失败即停止")
     run_parser.add_argument("--op-filter", help="仅测试匹配名称的算子 (支持通配符)")
     run_parser.add_argument("--format", choices=["markdown", "html", "json", "excel", "all"],

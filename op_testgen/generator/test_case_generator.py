@@ -47,7 +47,8 @@ class TestCaseGenerator:
         source_trace: str = "",
         backend: str = "cuda",
         seed: int = 42,
-        iters: int = 10,
+        cpu_iters: int = 1,
+        target_iters: int = 3,
         format: str = "markdown",
         output: str = "op_testgen_report.md",
     ) -> str:
@@ -61,7 +62,8 @@ class TestCaseGenerator:
             source_trace: 来源 trace 文件路径（用于注释）
             backend: 默认后端
             seed: 随机种子
-            iters: 性能测试迭代次数
+            cpu_iters: CPU baseline 迭代次数
+            target_iters: target backend 迭代次数
             format: 报告格式
             output: 报告输出路径
 
@@ -73,7 +75,8 @@ class TestCaseGenerator:
             "source_trace": source_trace,
             "backend": backend,
             "seed": seed,
-            "iters": iters,
+            "cpu_iters": cpu_iters,
+            "target_iters": target_iters,
             "format": format,
             "output": output,
         }
