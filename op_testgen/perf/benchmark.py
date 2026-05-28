@@ -27,10 +27,10 @@ class PerfResult:
 
 
 class PerfBenchmark:
-    def __init__(self, warmup_iters: int = 3, benchmark_iters: int = 10):
+    def __init__(self, cpu_iters: int = 1, target_iters: int = 3):
         self.settings = get_settings()
-        self.warmup_iters = warmup_iters
-        self.benchmark_iters = benchmark_iters
+        self.cpu_iters = cpu_iters
+        self.target_iters = target_iters
         self.classifier = OpClassifier()
         self.metrics = MetricsCalculator()
 
@@ -57,7 +57,7 @@ class PerfBenchmark:
             parts.append(f"kwargs={test_case.kwargs}")
         return "; ".join(parts)
 
-    def _measure_time(self, test_case: TestCase, device: str) -> float:
+    def _measure_time(self, test_case: TestCase, device: str, iters: int) -> float:
         op = test_case.mapped_op
 
         def to_device(obj):
@@ -70,23 +70,19 @@ class PerfBenchmark:
         positional = [to_device(arg) for arg in test_case.positional_args]
         kwargs = {k: v for k, v in test_case.kwargs.items()}
 
-        for _ in range(self.warmup_iters):
-            op.callable(*positional, **kwargs)
-            if device == "cuda":
-                torch.cuda.synchronize()
-
         if device == "cuda":
             torch.cuda.synchronize()
         start = time.perf_counter()
-        for _ in range(self.benchmark_iters):
+        for _ in range(iters):
             op.callable(*positional, **kwargs)
         if device == "cuda":
             torch.cuda.synchronize()
         end = time.perf_counter()
 
-        return (end - start) / self.benchmark_iters
+        return (end - start) / iters
 
-    def run(self, test_case: TestCase, backend: str = "cuda") -> PerfResult:
+    def run(self, test_case: TestCase, backend: str = "cuda",
+            cpu_time_ms: Optional[float] = None) -> PerfResult:
         op = test_case.mapped_op
         op_name = op.op_info.name
         category = self.classifier.classify(op_name)
@@ -96,15 +92,20 @@ class PerfBenchmark:
         prev_swdnn = os.environ.get("SWDNN", "OFF")
 
         try:
-            cpu_time = self._measure_time(test_case, "cpu")
+            # 优先复用 correctness 的 CPU 时间
+            if cpu_time_ms is not None:
+                cpu_time = cpu_time_ms / 1000.0
+            else:
+                os.environ["SWDNN"] = "OFF"
+                cpu_time = self._measure_time(test_case, "cpu", self.cpu_iters)
 
             target_time = cpu_time
             if backend == "swdnn":
                 os.environ["SWDNN"] = "ON"
-                target_time = self._measure_time(test_case, "cpu")
+                target_time = self._measure_time(test_case, "cpu", self.target_iters)
             elif backend == "cuda" and torch.cuda.is_available():
                 os.environ["SWDNN"] = "OFF"
-                target_time = self._measure_time(test_case, "cuda")
+                target_time = self._measure_time(test_case, "cuda", self.target_iters)
 
             speedup = cpu_time / target_time if target_time > 0 else 1.0
 
