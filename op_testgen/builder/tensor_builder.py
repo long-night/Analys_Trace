@@ -364,7 +364,7 @@ class TensorBuilder:
             while len(positional_args) > 8:
                 positional_args.pop()
 
-        if base_name == "add" and len(positional_args) >= 3 and positional_args[-1] is not None:
+        if base_name in ("add", "add_") and len(positional_args) >= 3 and positional_args[-1] is not None:
             kwargs["alpha"] = positional_args[-1]
             positional_args = positional_args[:-1]
         elif base_name == "baddbmm" and len(positional_args) >= 5 and positional_args[-1] is not None and positional_args[-2] is not None:
