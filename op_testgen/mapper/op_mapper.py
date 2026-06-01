@@ -88,6 +88,14 @@ class OpMapper:
                 return obj
         except (ImportError, AttributeError):
             pass
+        try:
+            obj = importlib.import_module(parts[0])
+            for part in parts[1:]:
+                obj = getattr(obj, part)
+            if callable(obj):
+                return obj
+        except (ImportError, AttributeError):
+            pass
         return None
 
     def _strip_tensor_suffix(self, name: str) -> str:
@@ -117,6 +125,11 @@ class OpMapper:
             callable_obj = self._resolve_callable(path)
             if callable_obj and callable(callable_obj):
                 return callable_obj, path, "torch"
+
+            path = f"torch.Tensor.{base_name}"
+            callable_obj = self._resolve_callable(path)
+            if callable_obj and callable(callable_obj):
+                return callable_obj, path, "torch.Tensor"
 
             path = f"torch.nn.functional.{base_name}"
             callable_obj = self._resolve_callable(path)

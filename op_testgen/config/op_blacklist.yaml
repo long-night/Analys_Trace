@@ -62,7 +62,6 @@ patterns:
 - aten::tolist
 - aten::addcmul_
 - aten::ones
-- aten::add_
 - aten::empty_strided
 - aten::to
 - aten::squeeze

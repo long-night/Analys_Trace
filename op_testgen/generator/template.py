@@ -64,12 +64,21 @@ def _build_mapped_op(data: Dict[str, Any]) -> Optional[_MappedOp]:
     )
 
     parts = data["callable_path"].split(".")
+    callable_obj = None
     try:
         module = importlib.import_module(".".join(parts[:-1]))
         callable_obj = getattr(module, parts[-1])
-    except (ImportError, AttributeError) as e:
-        print(f"  警告: 无法导入 {data['callable_path']}: {e}")
-        return None
+    except (ImportError, AttributeError):
+        pass
+    if callable_obj is None:
+        try:
+            obj = importlib.import_module(parts[0])
+            for part in parts[1:]:
+                obj = getattr(obj, part)
+            callable_obj = obj
+        except (ImportError, AttributeError) as e:
+            print(f"  警告: 无法导入 {data['callable_path']}: {e}")
+            return None
 
     return _MappedOp(
         op_info=op_info,
