@@ -246,7 +246,7 @@ class TraceAnalyzer:
                     "min_duration_ms": stats.min_duration_ms,
                     "max_duration_ms": stats.max_duration_ms,
                 })
-        all_shape_stats.sort(key=lambda x: (x["op_name"], -float(x["total_duration_ms"])))
+        all_shape_stats.sort(key=lambda x: -float(x["total_duration_ms"]))
 
         with open(shapes_file, "w", newline="", encoding="utf-8") as f:
             writer = csv.DictWriter(f, fieldnames=[
@@ -339,7 +339,7 @@ class TraceAnalyzer:
                     "min_duration_ms": stats.min_duration_ms,
                     "max_duration_ms": stats.max_duration_ms,
                 })
-        all_shape_stats.sort(key=lambda x: (x["op_name"], -float(x["total_duration_ms"])))
+        all_shape_stats.sort(key=lambda x: -float(x["total_duration_ms"]))
 
         for s in all_shape_stats:
             ws2.append([
