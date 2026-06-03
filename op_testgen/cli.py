@@ -152,7 +152,7 @@ def _prepare_mapped_ops(args) -> tuple[List[MappedOp], OpMapper]:
         selected_ops = set(sorted_op_names[:args.max_ops])
         unique_mapped_ops = [m for m in unique_mapped_ops if m.op_info.name in selected_ops]
 
-    unique_mapped_ops.sort(key=lambda m: (m.op_info.name, -m.op_info.duration_us))
+    unique_mapped_ops.sort(key=lambda m: -m.op_info.duration_us)
 
     return unique_mapped_ops, mapper
 
@@ -216,7 +216,7 @@ def cmd_test(args) -> int:
                     if correctness_result.error_message:
                         print(f"    [正确性 {status}] {correctness_result.op_name}: {correctness_result.error_message}")
                     else:
-                        print(f"    [正确性 {status}] {correctness_result.op_name}: max_abs={correctness_result.max_abs_err:.2e}, max_rel={correctness_result.max_rel_err:.2e}")
+                        print(f"    [正确性 {status}] {correctness_result.op_name}: max_abs={correctness_result.max_abs_err:.2e}, max_rel={correctness_result.max_rel_err:.2e}, avg_abs={correctness_result.avg_abs_err:.2e}, avg_rel={correctness_result.avg_rel_err:.2e}")
                     if correctness_result.input_info:
                         print(f"      input: {correctness_result.input_info}")
 

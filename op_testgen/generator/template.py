@@ -150,7 +150,7 @@ def main(argv=None) -> int:
                 if correctness_result.error_message:
                     print(f"    [正确性 {status}] {correctness_result.op_name}: {correctness_result.error_message}")
                 else:
-                    print(f"    [正确性 {status}] {correctness_result.op_name}: max_abs={correctness_result.max_abs_err:.2e}, max_rel={correctness_result.max_rel_err:.2e}")
+                    print(f"    [正确性 {status}] {correctness_result.op_name}: max_abs={correctness_result.max_abs_err:.2e}, max_rel={correctness_result.max_rel_err:.2e}, avg_abs={correctness_result.avg_abs_err:.2e}, avg_rel={correctness_result.avg_rel_err:.2e}")
                 if correctness_result.input_info:
                     print(f"      input: {correctness_result.input_info}")
 
