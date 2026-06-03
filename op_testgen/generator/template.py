@@ -167,6 +167,13 @@ def main(argv=None) -> int:
             del test_case
             if torch.cuda.is_available():
                 torch.cuda.empty_cache()
+            # 当前算子的所有 backend 已测试完毕，释放其 cpu_out 以降低峰值内存
+            if cpu_baseline_cache is not None:
+                cpu_out_tensor = cpu_baseline_cache[0]
+                for r in all_correctness:
+                    if r.cpu_out is cpu_out_tensor:
+                        r.cpu_out = None
+                del cpu_baseline_cache
 
     passed = sum(1 for r in all_correctness if r.passed)
     if passed > 0 or all_correctness:
@@ -174,6 +181,10 @@ def main(argv=None) -> int:
     if all_perf:
         avg_speedup = sum(r.speedup for r in all_perf) / len(all_perf)
         print(f"  平均加速比: {avg_speedup:.2f}x")
+
+    # 释放 correctness 结果中持有的大张量，减少内存峰值
+    for r in all_correctness:
+        r.cpu_out = None
 
     print("\\n[报告] 生成测试报告...")
     if args.format in ("markdown", "all"):

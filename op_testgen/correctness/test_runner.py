@@ -245,6 +245,9 @@ class CorrectnessRunner:
 
             passed = self._check_tolerance(cpu_out, target_out_cpu, atol, rtol)
 
+            # 显式释放 target 分支的中间张量，避免依赖延迟 GC
+            del target_positional, target_out, target_out_cpu
+
             return CorrectnessResult(
                 op_name=op_name,
                 passed=passed,
@@ -350,6 +353,9 @@ class CorrectnessRunner:
             dtype_str = op.op_info.input_types[0] if op.op_info.input_types else "float32"
             atol, rtol = self._get_threshold(dtype_str, op_name)
             passed = self._check_tolerance(cpu_out, target_out_cpu, atol, rtol)
+
+            # 显式释放 target 分支的中间张量，避免依赖延迟 GC
+            del target_positional, target_out, target_out_cpu
 
             return CorrectnessResult(
                 op_name=op_name,
